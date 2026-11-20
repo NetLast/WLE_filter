@@ -137,8 +137,7 @@ def create_app(store: Store | None = None, worker: Worker | None = None) -> Fast
 
     @app.get("/api/info")
     def info():
-        from .analysis import get_ocr
-        return {"version": __version__, "reasons": REASON_LABELS, "ocr": get_ocr() is not None,
+        return {"version": __version__, "reasons": REASON_LABELS,
                 "person_conf_floor": config.PERSON_CONF_FLOOR,
                 "data_dir": str(store.path.parent)}
 
@@ -357,11 +356,8 @@ def create_app(store: Store | None = None, worker: Worker | None = None) -> Fast
                     "verdict": it["verdict"], "auto_verdict": it["auto_verdict"],
                     "manual": it["manual"], "note": it["note"],
                     "reasons": [{k: v for k, v in r.items() if k != "of"} for r in it["reasons"]],
-                    "metrics": {"blur": it["blur"], "sign": it["sign"], "text": it.get("text"),
+                    "metrics": {"blur": it["blur"], "sign": it["sign"],
                                 "person_area": it["person_area"],
-                                "horizon_angle": it.get("horizon_angle"), "horizon_conf": it.get("horizon_conf"),
-                                "shadows": it.get("shadows"), "highlights": it.get("highlights"),
-                                "sat_clip": it.get("sat_clip"),
                                 "width": it["width"], "height": it["height"]},
                 } for it in items],
             }
@@ -371,7 +367,6 @@ def create_app(store: Store | None = None, worker: Worker | None = None) -> Fast
 
         buf = io.StringIO()
         cols = ["file", "page_id", "author", "blur_score", "person_area", "sign_coverage",
-                "horizon_angle", "shadows", "sat_clip", "text",
                 "duplicate_of", "width", "height", "verdict", "auto_verdict", "manual",
                 "reasons", "note", "page_url", "local_path"]
         w = csv.DictWriter(buf, fieldnames=cols)
@@ -381,10 +376,6 @@ def create_app(store: Store | None = None, worker: Worker | None = None) -> Fast
             w.writerow({"file": it["title"], "page_id": it["page_id"] or "", "author": it["author"] or "",
                         "blur_score": it["blur"] if it["blur"] is not None else "",
                         "person_area": it["person_area"], "sign_coverage": it["sign"] if it["sign"] is not None else "",
-                        "horizon_angle": it.get("horizon_angle") if it.get("horizon_angle") is not None else "",
-                        "shadows": it.get("shadows") if it.get("shadows") is not None else "",
-                        "sat_clip": it.get("sat_clip") if it.get("sat_clip") is not None else "",
-                        "text": it.get("text") or "",
                         "duplicate_of": dup, "width": it["width"] or "", "height": it["height"] or "",
                         "verdict": it["verdict"], "auto_verdict": it["auto_verdict"],
                         "manual": it["manual"] or "",

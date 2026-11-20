@@ -164,7 +164,8 @@ class Store:
     # ─── Фото ────────────────────────────────────────────────────────────────
     def add_candidates(self, run_id: int, candidates: list[dict]) -> int:
         """Додає нові фото (наявні за key пропускає). Повертає кількість доданих."""
-        candidates = sorted(candidates, key=lambda c: (c.get("timestamp") or "", c["key"]))
+        # Порядок — як віддало джерело (для Commons — порядок категорії, як у вихідному
+        # скрипті): від нього залежить, яке з двох схожих фото вважається оригіналом.
         with self._lock:
             start = self._conn.execute("SELECT COALESCE(MAX(seq), -1) FROM images WHERE run_id=?",
                                        (run_id,)).fetchone()[0] + 1

@@ -20,56 +20,40 @@ YOLO_WEIGHTS = os.environ.get("WLE_YOLO_WEIGHTS", str(REPO_DIR / "yolov8n.pt"))
 ANALYSIS_WIDTH = 800
 
 # Версія шкали порогів. Збільшується, коли змінюється зміст метрик
-# (напр., v2: різкість рахується по найрізкішій частині кадру, таблички — через OCR).
+# (v3: повернення до вихідних алгоритмів; пресети v2 ігноруються).
 # Збережені пресети старішої версії ігноруються, щоб не застосувати старі числа до нових метрик.
-THRESHOLDS_VERSION = 2
+THRESHOLDS_VERSION = 3
 
-# Мінімальна впевненість, з якою YOLO-детекції зберігаються в базі.
-# Поріг «впевненість людини» в інтерфейсі не може бути нижчим за це значення.
-PERSON_CONF_FLOOR = 0.05
+# YOLO викликається з налаштуваннями за замовчуванням (як у вихідному коді),
+# тож детекції з упевненістю < 0.25 не зберігаються, і поріг не може бути нижчим.
+PERSON_CONF_FLOOR = 0.25
 
 HTTP_HEADERS = {"User-Agent": "WLE-Filter-Bot/3.0 (research; commons.wikimedia.org)"}
 
 
 @dataclass
 class Thresholds:
-    # Розмитість: різкість найрізкішої частини кадру; менше — розмитіше
+    """Значення за замовчуванням = константи вихідного main.py."""
+    # BLUR_THRESHOLD: дисперсія Лапласіана; менше — розмитіше
     blur_enabled: bool = True
-    blur_threshold: float = 250.0
+    blur_threshold: float = 200.0
 
-    # Люди: YOLO клас 0 з впевненістю ≥ person_confidence і площею ≥ person_area
+    # PERSON_CONFIDENCE / PERSON_AREA_THRESHOLD
     person_enabled: bool = True
     person_confidence: float = 0.25
-    person_area: float = 0.01
+    person_area: float = 0.05
 
-    # Таблички / текст: площа прямокутника навколо розпізнаного тексту
+    # SIGN_COVERAGE_MIN
     sign_enabled: bool = True
-    sign_coverage: float = 0.005
+    sign_coverage: float = 0.15
 
-    # Завалений горизонт: нахил найвиразнішої лінії через увесь кадр
-    horizon_enabled: bool = True
-    horizon_angle: float = 1.5        # градусів
-    horizon_conf: float = 1.8         # наскільки впевнено знайдено горизонт
-
-    # Експозиція: глибокі тіні / пересвіт
-    shadows_enabled: bool = True
-    shadows_max: float = 0.30
-    highlights_enabled: bool = False
-    highlights_max: float = 0.30
-
-    # Перенасичені кольори (агресивна обробка) — експериментально, вимкнено
-    saturation_enabled: bool = False
-    saturation_clip: float = 0.006
-
-    # Дублікати: спільні ключові точки (той самий кадр/сцена) або хеші
+    # HASH_THRESHOLD / HASH_TYPE
     duplicate_enabled: bool = True
-    duplicate_method: str = "features"   # "features" | "hash"
-    duplicate_inliers: int = 30          # для features: мін. спільних точок
-    duplicate_distance: int = 12         # для hash: макс. відстань Геммінга
-    hash_type: str = "phash"             # "dhash" | "phash"
-    duplicate_scope: str = "all"         # "all" | "author"
+    duplicate_distance: int = 12
+    hash_type: str = "dhash"          # "dhash" | "phash"
+    duplicate_scope: str = "all"      # "all" — як у вихідному коді; "author" — у межах автора
 
-    # Мінімальна роздільність оригіналу, мегапікселі
+    # Мінімальна роздільність оригіналу, мегапікселі (у вихідному коді не було; вимкнено)
     min_mpx_enabled: bool = False
     min_mpx: float = 2.0
 
@@ -100,8 +84,6 @@ class Thresholds:
             t.hash_type = "dhash"
         if t.duplicate_scope not in ("all", "author"):
             t.duplicate_scope = "all"
-        if t.duplicate_method not in ("features", "hash"):
-            t.duplicate_method = "features"
         t.person_confidence = max(t.person_confidence, PERSON_CONF_FLOOR)
         return t
 
@@ -115,25 +97,15 @@ class Thresholds:
 DEFAULT_PRESETS: dict[str, dict] = {
     "quality": {
         "label": "Якісна номінація",
-        "description": "Суворо до різкості, людей, табличок, горизонту, тіней і обробки.",
+        "description": "Вихідні пороги main.py: blur 200, люди 0.25/5%, табличка 15%, dHash 12.",
         "category": "Wiki Loves Earth Ukraine 2026 - Quality",
         "thresholds": Thresholds().to_dict(),
     },
     "quantity": {
         "label": "Кількісна номінація",
-        "description": "Головне — відсіяти повтори одного кадру одним автором; "
-                       "до композиції та обробки м'якше.",
+        "description": "Ті самі вихідні пороги — налаштуйте повзунками і збережіть у пресет.",
         "category": "Wiki Loves Earth Ukraine 2026 - Quantity",
-        "thresholds": Thresholds(
-            blur_threshold=150.0,
-            person_area=0.03,
-            sign_coverage=0.05,
-            horizon_enabled=False,
-            shadows_enabled=False,
-            saturation_enabled=False,
-            duplicate_inliers=25,
-            duplicate_scope="author",
-        ).to_dict(),
+        "thresholds": Thresholds().to_dict(),
     },
 }
 

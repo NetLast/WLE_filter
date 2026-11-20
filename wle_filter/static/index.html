@@ -127,10 +127,6 @@ section.main{padding:16px 20px;min-width:0}
 .lb-wrap img{max-width:100%;max-height:calc(100vh - 48px);display:block}
 .pbox{position:absolute;border:2px solid #fc3;pointer-events:none}
 .pbox.hit{border-color:#f54739}
-.tbox{position:absolute;border:2px dashed #4fc3f7;pointer-events:none}
-.hline{position:absolute;height:0;border-top:2px dashed #8fdc8f;transform-origin:50% 0;pointer-events:none}
-.hline.hit{border-top-color:#f54739}
-.exp-flag{font-size:10px;font-weight:700;text-transform:uppercase;color:var(--color-warning);margin-left:4px}
 .pbox span{position:absolute;left:-2px;top:-20px;background:#fc3;color:#101418;font-size:11px;font-weight:700;padding:1px 4px;white-space:nowrap}
 .pbox.hit span{background:#f54739;color:#fff}
 .lb-nav{position:absolute;top:50%;transform:translateY(-50%)}
@@ -407,8 +403,7 @@ const S = {
   pageSize: 60, focusIdx: -1, lbIndex: -1, showBoxes: true,
   loading: false, dirtySave: false,
 };
-const REASONS = {blur:"Розмите", person:"Людина", sign:"Табличка/текст", horizon:"Горизонт", shadows:"Тіні", highlights:"Пересвіт",
-  saturation:"Перенасичення", duplicate:"Дублікат", mpx:"Мала роздільність", error:"Помилка"};
+const REASONS = {blur:"Розмите", person:"Людина", sign:"Табличка/текст", duplicate:"Дублікат", mpx:"Мала роздільність", error:"Помилка"};
 const STATUS = {new:"новий", listing:"отримую список", running:"обробка", paused:"на паузі", done:"готово", failed:"помилка"};
 
 const $ = (s, el=document) => el.querySelector(s);
@@ -522,7 +517,7 @@ function renderRunHeader() {
   $("#bar").style.setProperty("--cdx-progress-value", r.status === "done" ? 100 : pct);
   const busy = r.active || r.status === "running" || r.status === "listing";
   let msg = `${fmtInt(r.processed)} / ${fmtInt(r.total)} оброблено · ${STATUS[r.status] || r.status}`;
-  if (r.outdated && !busy) msg += ` · ${fmtInt(r.outdated)} фото потребують повторного аналізу новою версією — натисніть «Продовжити»`;
+  if (r.outdated && !busy) msg += ` · ${fmtInt(r.outdated)} фото потребують повторного аналізу вихідними фільтрами — натисніть «Продовжити»`;
   if (r.message) msg += ` · ${r.message}`;
   $("#runMsg").textContent = msg;
   $("#runMsg").title = msg;
@@ -538,6 +533,10 @@ async function poll() {
   if (!(was.active || ["running","listing"].includes(was.status))) return;
   try {
     S.run = await api(`/api/runs/${was.id}`);
+    // Сервер міг скинути пороги (повторний аналіз іншою версією фільтрів) — підхоплюємо
+    if (!S.dirtySave && JSON.stringify(S.run.thresholds) !== JSON.stringify(S.t)) {
+      S.t = {...S.run.thresholds}; syncAside();
+    }
     renderRunHeader();
     if (S.run.processed !== lastProcessed) {
       lastProcessed = S.run.processed;
@@ -598,33 +597,18 @@ function renderLayout() {
 
 // ─── Панель чутливості ─────────────────────────────────────────────────────
 const FILTERS = [
-  {key:"blur", title:"Розмитість", hint:"Різкість найрізкішої частини кадру (макро з розмитим фоном не штрафується). НИЖЧЕ порогу — розмите.",
-   params:[{k:"blur_threshold", label:"Поріг різкості", min:1, max:5000, step:1, log:true}]},
+  {key:"blur", title:"Розмитість", hint:"Дисперсія Лапласіана. Фото з оцінкою НИЖЧЕ порогу — розмиті.",
+   params:[{k:"blur_threshold", label:"Поріг різкості", min:1, max:3000, step:1, log:true}]},
   {key:"person", title:"Людина в кадрі", hint:"YOLOv8: рамка людини з упевненістю ≥ порогу, що займає ≥ вказаної частки кадру.",
-   params:[{k:"person_confidence", label:"Упевненість детектора", min:0.05, max:0.95, step:0.01},
-           {k:"person_area", label:"Мін. площа людини, %", min:0, max:0.6, step:0.0025, pct:true}]},
-  {key:"sign", title:"Табличка / текст", hint:"Розпізнаний текст (OCR): площа прямокутника навколо всіх написів. Текстури трави чи води не рахуються.",
-   params:[{k:"sign_coverage", label:"Мін. площа напису, %", min:0.001, max:0.5, step:0.001, pct:true, log:true}]},
-  {key:"horizon", title:"Завалений горизонт", hint:"Нахил найвиразнішої лінії через увесь кадр (горизонт, уріз води). Впевненість < 1.5 — горизонту, ймовірно, немає (макро, ліс).",
-   params:[{k:"horizon_angle", label:"Мін. нахил, °", min:0.25, max:10, step:0.25},
-           {k:"horizon_conf", label:"Мін. впевненість горизонту", min:1, max:4, step:0.05}]},
-  {key:"shadows", title:"Глибокі тіні", hint:"Частка майже чорних ділянок кадру (тінь закриває об'єкт).",
-   params:[{k:"shadows_max", label:"Макс. частка тіней, %", min:0.05, max:0.8, step:0.01, pct:true}]},
-  {key:"highlights", title:"Пересвіт", hint:"Частка пересвічених (білих) ділянок. Яскраве небо теж рахується — вмикайте обережно.",
-   params:[{k:"highlights_max", label:"Макс. частка пересвіту, %", min:0.02, max:0.8, step:0.01, pct:true}]},
-  {key:"saturation", title:"Перенасичені кольори", experimental:true,
-   hint:"Експериментально: частка пікселів з насиченістю «в стелю». Яскраві квіти й зелень теж можуть спрацювати — перевіряйте вручну.",
-   params:[{k:"saturation_clip", label:"Макс. частка, %", min:0.001, max:0.1, step:0.001, pct:true, log:true}]},
-  {key:"duplicate", title:"Дублікати", hint:"",
-   params:[{k:"duplicate_inliers", label:"Мін. спільних точок (той самий кадр)", min:8, max:200, step:1, log:true, only:"features"},
-           {k:"duplicate_distance", label:"Макс. відстань хешів", min:0, max:30, step:1, only:"hash"}]},
+   params:[{k:"person_confidence", label:"Упевненість детектора", min:0.25, max:0.95, step:0.01},
+           {k:"person_area", label:"Мін. площа людини, %", min:0, max:0.6, step:0.005, pct:true}]},
+  {key:"sign", title:"Табличка / текст", hint:"Частка кадру, вкрита текстоподібними блоками (СТРОГО більше порогу). Чутливе до дрібних текстур (гілки, трава) і сильного розмиття.",
+   params:[{k:"sign_coverage", label:"Мін. покриття текстом, %", min:0.01, max:0.6, step:0.005, pct:true}]},
+  {key:"duplicate", title:"Дублікати", hint:"Відстань Геммінга між перцептивними хешами (0 — ідентичні). Більше значення — більше збігів.",
+   params:[{k:"duplicate_distance", label:"Макс. відстань", min:0, max:30, step:1}]},
   {key:"min_mpx", title:"Мін. роздільність", hint:"Роздільність оригіналу в мегапікселях.",
    params:[{k:"min_mpx", label:"Мін. мегапікселів", min:0.1, max:24, step:0.1}]},
 ];
-const DUP_HINT = {
-  features: "Порівнює ключові точки кадру (SIFT): ловить той самий об'єкт з трохи іншим кадруванням, експозицією чи орієнтацією. Різні сцени зазвичай мають < 15 спільних точок, повтори — від 30 до сотень. Майже ідентичні кадри — дублікати завжди.",
-  hash: "Перцептивні хеші, як у старих версіях: 0 — ідентичні, більше — більше збігів. Не бачить зміну кадрування.",
-};
 const enabledKey = f => f.key === "min_mpx" ? "min_mpx_enabled" : f.key + "_enabled";
 const reasonCode = f => f.key === "min_mpx" ? "mpx" : f.key;
 
@@ -647,25 +631,24 @@ function renderAside() {
           <span class="cdx-toggle-switch">
             <input id="sw-${f.key}" class="cdx-toggle-switch__input" type="checkbox" role="switch" data-en="${enabledKey(f)}">
             <span class="cdx-toggle-switch__switch"><span class="cdx-toggle-switch__switch__grip"></span></span>
-            <label for="sw-${f.key}" class="cdx-toggle-switch__label cdx-label"><span class="cdx-label__label"><span class="cdx-label__label__text">${f.title}</span>${f.experimental ? ` <span class="exp-flag">експер.</span>` : ""}</span></label>
+            <label for="sw-${f.key}" class="cdx-toggle-switch__label cdx-label"><span class="cdx-label__label"><span class="cdx-label__label__text">${f.title}</span></span></label>
           </span>
           <span class="count" id="cnt-${reasonCode(f)}" title="Скільки фото відсіює цей фільтр">0</span>
         </div>
         <div class="fbody">
           ${["blur","person","sign"].includes(f.key) ? `<canvas class="hist" id="h-${f.key}" width="600" height="92" title="Клік — встановити поріг"></canvas>` : ""}
           ${f.params.map(pr => `
-            <div class="param" ${pr.only ? `data-only="${pr.only}"` : ""}>
+            <div class="param">
               <span class="plabel"><span>${pr.label}</span><b id="v-${pr.k}"></b></span>
               <input type="range" data-k="${pr.k}" min="0" max="1000" step="1" aria-label="${pr.label}">
               <div class="cdx-text-input"><input class="cdx-text-input__input" type="number" data-num="${pr.k}" aria-label="${pr.label}"
                 step="${pr.pct ? 0.5 : pr.step}" min="${pr.pct ? pr.min*100 : pr.min}" max="${pr.pct ? pr.max*100 : pr.max}"></div>
             </div>`).join("")}
           ${f.key === "duplicate" ? `<div class="row2">
-              <select class="cdx-select" data-sel="duplicate_method" title="Метод"><option value="features">Спільні точки (рекомендовано)</option><option value="hash">Хеші (як раніше)</option></select>
-              <select class="cdx-select" data-sel="hash_type" data-only="hash" title="Тип хешу"><option value="phash">pHash</option><option value="dhash">dHash</option></select>
+              <select class="cdx-select" data-sel="hash_type" title="Тип хешу"><option value="dhash">dHash (швидкий)</option><option value="phash">pHash (стійкіший)</option></select>
               <select class="cdx-select" data-sel="duplicate_scope" title="Серед яких фото шукати"><option value="all">Серед усіх фото</option><option value="author">У межах автора</option></select>
             </div>` : ""}
-          <p class="hint" ${f.key === "duplicate" ? 'id="dupHint"' : ""}>${f.hint}</p>
+          <p class="hint">${f.hint}</p>
         </div>
       </div>`).join("")}
     <div class="aside-actions">
@@ -742,8 +725,6 @@ function syncAside() {
     });
   });
   aside.querySelectorAll("[data-sel]").forEach(el => el.value = S.t[el.dataset.sel]);
-  aside.querySelectorAll("[data-only]").forEach(el => el.hidden = el.dataset.only !== S.t.duplicate_method);
-  const dh = $("#dupHint"); if (dh) dh.textContent = DUP_HINT[S.t.duplicate_method] || "";
   drawHists();
 }
 
@@ -860,12 +841,8 @@ function reasonLabel(r) {
   switch (r.code) {
     case "blur": return `Розмите (${fmtNum(r.value)})`;
     case "person": return `Людина ${fmtPct(r.value)}`;
-    case "sign": return `Напис ${fmtPct(r.value)}`;
-    case "duplicate": return r.how === "points" ? `Дублікат (${r.value} точок)` : `Дублікат (d=${r.value})`;
-    case "horizon": return `Горизонт ${r.value > 0 ? "↘" : "↗"} ${Math.abs(r.value)}°`;
-    case "shadows": return `Тіні ${fmtPct(r.value)}`;
-    case "highlights": return `Пересвіт ${fmtPct(r.value)}`;
-    case "saturation": return `Перенасичення ${fmtPct(r.value)}`;
+    case "sign": return `Текст ${fmtPct(r.value)}`;
+    case "duplicate": return `Дублікат (d=${r.value})`;
     case "mpx": return `${r.value} Мп`;
     case "error": return "Помилка";
   }
@@ -880,9 +857,7 @@ function cardHTML(it) {
   const metrics = it.status === "done" ? `
       <span class="${hit("blur")}" title="Різкість">◎ ${fmtNum(it.blur)}</span>
       <span class="${hit("person")}" title="Найбільша людина">👤 ${fmtPct(it.person_area)}</span>
-      ${it.sign ? `<span class="${hit("sign")}" title="Площа напису: ${esc(it.text || "")}">▤ ${fmtPct(it.sign)}</span>` : ""}
-      ${it.horizon_conf >= 1.5 ? `<span class="${hit("horizon")}" title="Нахил горизонту (впевненість ${it.horizon_conf})">⦣ ${it.horizon_angle}°</span>` : ""}
-      ${it.shadows >= 0.15 ? `<span class="${hit("shadows")}" title="Частка глибоких тіней">◐ ${fmtPct(it.shadows)}</span>` : ""}
+      <span class="${hit("sign")}" title="Покриття текстом">▤ ${fmtPct(it.sign || 0)}</span>
       ${it.width ? `<span class="${hit("mpx")}" title="Роздільність оригіналу">${(it.width*it.height/1e6).toFixed(1)} Мп</span>` : ""}`
     : `<span>${it.status === "error" ? esc(it.error || "помилка") : "очікує аналізу"}</span>`;
   return `<div class="card" data-id="${it.id}">
@@ -983,26 +958,8 @@ function closeLightbox() {
   $(`.card[data-id="${S.items[S.focusIdx]?.id}"]`)?.scrollIntoView({block:"nearest"});
 }
 function drawBoxes() {
-  const wrap = $("#lbWrap"); wrap.querySelectorAll(".pbox,.tbox,.hline").forEach(b => b.remove());
+  const wrap = $("#lbWrap"); wrap.querySelectorAll(".pbox").forEach(b => b.remove());
   const it = S.items[S.lbIndex]; if (!it || !S.showBoxes) return;
-  (it.text_boxes || []).forEach(([x1, y1, x2, y2]) => {
-    const d = document.createElement("div"); d.className = "tbox";
-    Object.assign(d.style, {left: x1*100+"%", top: y1*100+"%", width: (x2-x1)*100+"%", height: (y2-y1)*100+"%"});
-    wrap.appendChild(d);
-  });
-  if (it.horizon_conf >= Math.min(S.t.horizon_conf, 1.5) && it.horizon_row != null) {
-    const img = $("#lbImg"), W = img.clientWidth, H = img.clientHeight;
-    if (W && H) {
-      const ang = it.horizon_angle * Math.PI / 180;
-      const len = W / Math.cos(ang);
-      const d = document.createElement("div");
-      d.className = "hline" + (it.reasons.some(r => r.code === "horizon") ? " hit" : "");
-      Object.assign(d.style, {left: (W - len) / 2 + "px", top: it.horizon_row * H + "px", width: len + "px",
-                              transform: `rotate(${it.horizon_angle}deg)`});
-      d.title = `Знайдений горизонт: ${it.horizon_angle}°, впевненість ${it.horizon_conf}`;
-      wrap.appendChild(d);
-    }
-  }
   (it.persons || []).forEach(p => {
     if (p.conf < S.t.person_confidence) return;
     const [x1, y1, x2, y2] = p.box;
@@ -1032,17 +989,14 @@ function renderLbSide() {
       <dt>Автор</dt><dd>${esc(it.author || "—")}</dd>
       <dt>Різкість</dt><dd>${fmtNum(it.blur)} <span class="muted">(поріг ${fmtNum(S.t.blur_threshold)})</span></dd>
       <dt>Людей</dt><dd>${nPersons}, найбільша ${fmtPct(it.person_area)}</dd>
-      <dt>Напис</dt><dd>${it.sign ? `${fmtPct(it.sign)} кадру${it.text ? ` — «${esc(it.text.slice(0, 60))}»` : ""}` : "—"}</dd>
-      <dt>Горизонт</dt><dd>${it.horizon_conf != null ? `${it.horizon_angle}° <span class="muted">(впевненість ${it.horizon_conf})</span>` : "—"}</dd>
-      <dt>Тіні / пересвіт</dt><dd>${it.shadows != null ? `${fmtPct(it.shadows)} / ${fmtPct(it.highlights || 0)}` : "—"}</dd>
-      <dt>Насиченість</dt><dd>${it.sat_clip != null ? fmtPct(it.sat_clip) : "—"}</dd>
+      <dt>Текст</dt><dd>${fmtPct(it.sign || 0)}</dd>
       <dt>Розмір</dt><dd>${it.width ? `${it.width}×${it.height} (${(it.width*it.height/1e6).toFixed(1)} Мп)` : "—"}</dd>
       <dt>Автовердикт</dt><dd>${{ok:"пройшло", flagged:"відсіяно", error:"помилка", pending:"в черзі"}[it.auto_verdict]}</dd>
       ${it.page_id ? `<dt>pageId</dt><dd>${it.page_id}</dd>` : ""}
     </dl>
     <div>${it.page_url ? `<a href="${esc(it.page_url)}" target="_blank" rel="noopener">Відкрити на Commons ↗</a>` : `<a href="/api/images/${it.id}/original" target="_blank">Оригінал ↗</a>`}</div>
     <div class="keys"><kbd>←</kbd> <kbd>→</kbd> навігація · <kbd>A</kbd> залишити · <kbd>R</kbd> відхилити · <kbd>U</kbd> скинути ·
-      <kbd>B</kbd> рамки людей, тексту й горизонт · <kbd>Esc</kbd> закрити</div>`;
+      <kbd>B</kbd> рамки людей · <kbd>Esc</kbd> закрити</div>`;
   $("#lbSide").querySelectorAll("[data-dec]").forEach(b => b.onclick = () =>
     decide(it.id, it.manual === b.dataset.dec ? null : b.dataset.dec));
   const dupEl = $("#lbSide [data-dup]");

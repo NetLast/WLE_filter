@@ -13,7 +13,6 @@ import argparse
 import csv
 import os
 import sys
-from pathlib import Path
 
 from wle_filter import config
 from wle_filter.config import Thresholds
@@ -57,16 +56,13 @@ def export_csv(store: Store, run_id: int, thresholds: dict | None = None, path: 
     with open(path, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
         w.writerow(["file", "page_id", "author", "blur_score", "person_area", "sign_coverage",
-                    "horizon_angle", "horizon_conf", "shadows", "sat_clip", "text",
                     "duplicate_of", "verdict", "auto_verdict", "manual", "reasons", "local_path"])
         for img, e in zip(images, ev):
             dup = next((titles.get(r["of"], "") for r in e["reasons"] if r["code"] == "duplicate"), "")
             w.writerow([img["title"], img["page_id"] or "", img["author"] or "",
                         "" if img["blur"] is None else img["blur"], e["person_area"],
                         "" if img["sign"] is None else img["sign"],
-                        *["" if img.get(k) is None else img[k] for k in
-                          ("horizon_angle", "horizon_conf", "shadows", "sat_clip")],
-                        img.get("text") or "", dup,
+                        dup,
                         e["verdict"], e["auto_verdict"], e["manual"] or "",
                         img["error"] if img["status"] == "error" else reasons_text(e["reasons"]),
                         img["local_path"] or ""])
