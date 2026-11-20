@@ -127,6 +127,10 @@ section.main{padding:16px 20px;min-width:0}
 .lb-wrap img{max-width:100%;max-height:calc(100vh - 48px);display:block}
 .pbox{position:absolute;border:2px solid #fc3;pointer-events:none}
 .pbox.hit{border-color:#f54739}
+.ovl{position:absolute;pointer-events:none}
+.tbox{position:absolute;border:2px dashed #4fc3f7;pointer-events:none;box-shadow:0 0 0 1px rgba(0,0,0,.35)}
+.tbox.watermark{border-color:#ffb300;border-style:solid}
+.obox{position:absolute;pointer-events:none;border:2px solid #f54739;background:rgba(245,71,57,.15)}
 .pbox span{position:absolute;left:-2px;top:-20px;background:#fc3;color:#101418;font-size:11px;font-weight:700;padding:1px 4px;white-space:nowrap}
 .pbox.hit span{background:#f54739;color:#fff}
 .lb-nav{position:absolute;top:50%;transform:translateY(-50%)}
@@ -403,7 +407,7 @@ const S = {
   pageSize: 60, focusIdx: -1, lbIndex: -1, showBoxes: true,
   loading: false, dirtySave: false,
 };
-const REASONS = {blur:"Розмите", person:"Людина", sign:"Табличка/текст", duplicate:"Дублікат", mpx:"Мала роздільність", error:"Помилка"};
+const REASONS = {blur:"Розмите", person:"Людина", sign:"Табличка/написи", watermark:"Вотермарка", duplicate:"Дублікат", mpx:"Мала роздільність", error:"Помилка"};
 const STATUS = {new:"новий", listing:"отримую список", running:"обробка", paused:"на паузі", done:"готово", failed:"помилка"};
 
 const $ = (s, el=document) => el.querySelector(s);
@@ -602,8 +606,11 @@ const FILTERS = [
   {key:"person", title:"Людина в кадрі", hint:"YOLOv8: рамка людини з упевненістю ≥ порогу, що займає ≥ вказаної частки кадру.",
    params:[{k:"person_confidence", label:"Упевненість детектора", min:0.25, max:0.95, step:0.01},
            {k:"person_area", label:"Мін. площа людини, %", min:0, max:0.6, step:0.005, pct:true}]},
-  {key:"sign", title:"Табличка / текст", hint:"Частка кадру, вкрита текстоподібними блоками (СТРОГО більше порогу). Чутливе до дрібних текстур (гілки, трава) і сильного розмиття.",
-   params:[{k:"sign_coverage", label:"Мін. покриття текстом, %", min:0.01, max:0.6, step:0.005, pct:true}]},
+  {key:"sign", title:"Табличка / написи", hint:"",
+   params:[{k:"sign_text_area", label:"Мін. площа написів, % (багато вивісок)", min:0.001, max:0.3, step:0.001, pct:true, log:true, only:"sign_method:ocr"},
+           {k:"sign_object_area", label:"Мін. площа таблички з постаментом, %", min:0.02, max:0.8, step:0.005, pct:true, only:"sign_method:ocr"},
+           {k:"sign_coverage", label:"Мін. покриття текстом, %", min:0.01, max:0.6, step:0.005, pct:true, only:"sign_method:legacy"}]},
+  {key:"watermark", title:"Вотермарка", hint:"Дрібний поодинокий напис біля краю кадру (підпис автора, сайт). Рамка показується прямо на мініатюрі.", params:[]},
   {key:"duplicate", title:"Дублікати", hint:"Відстань Геммінга між перцептивними хешами (0 — ідентичні). Більше значення — більше збігів.",
    params:[{k:"duplicate_distance", label:"Макс. відстань", min:0, max:30, step:1}]},
   {key:"min_mpx", title:"Мін. роздільність", hint:"Роздільність оригіналу в мегапікселях.",
@@ -638,17 +645,20 @@ function renderAside() {
         <div class="fbody">
           ${["blur","person","sign"].includes(f.key) ? `<canvas class="hist" id="h-${f.key}" width="600" height="92" title="Клік — встановити поріг"></canvas>` : ""}
           ${f.params.map(pr => `
-            <div class="param">
+            <div class="param" ${pr.only ? `data-only="${pr.only}"` : ""}>
               <span class="plabel"><span>${pr.label}</span><b id="v-${pr.k}"></b></span>
               <input type="range" data-k="${pr.k}" min="0" max="1000" step="1" aria-label="${pr.label}">
               <div class="cdx-text-input"><input class="cdx-text-input__input" type="number" data-num="${pr.k}" aria-label="${pr.label}"
                 step="${pr.pct ? 0.5 : pr.step}" min="${pr.pct ? pr.min*100 : pr.min}" max="${pr.pct ? pr.max*100 : pr.max}"></div>
             </div>`).join("")}
+          ${f.key === "sign" ? `<div class="row2" style="grid-template-columns:1fr">
+              <select class="cdx-select" data-sel="sign_method" title="Метод"><option value="ocr">Розпізнавання тексту (рекомендовано)</option><option value="legacy">Евристика main.py (як раніше)</option></select>
+            </div>` : ""}
           ${f.key === "duplicate" ? `<div class="row2">
               <select class="cdx-select" data-sel="hash_type" title="Тип хешу"><option value="dhash">dHash (швидкий)</option><option value="phash">pHash (стійкіший)</option></select>
               <select class="cdx-select" data-sel="duplicate_scope" title="Серед яких фото шукати"><option value="all">Серед усіх фото</option><option value="author">У межах автора</option></select>
             </div>` : ""}
-          <p class="hint">${f.hint}</p>
+          <p class="hint" ${f.key === "sign" ? 'id="signHint"' : ""}>${f.hint}</p>
         </div>
       </div>`).join("")}
     <div class="aside-actions">
@@ -725,6 +735,12 @@ function syncAside() {
     });
   });
   aside.querySelectorAll("[data-sel]").forEach(el => el.value = S.t[el.dataset.sel]);
+  aside.querySelectorAll("[data-only]").forEach(el => { const [k, v] = el.dataset.only.split(":"); el.hidden = S.t[k] !== v; });
+  const sh = $("#signHint");
+  if (sh) sh.textContent = S.t.sign_method === "ocr"
+    ? (S.info?.ocr === false ? "⚠ Бібліотеку rapidocr-onnxruntime не встановлено — використовується евристика. Встановіть: pip install -r requirements.txt"
+       : "Розпізнаний текст. Відсіює, якщо написів у кадрі багато (сумарна площа ≥ порогу) АБО табличка разом з постаментом займає ≥ порогу. Площа з постаментом — наближена оцінка, її видно в перегляді фото.")
+    : "Вихідна евристика: частка кадру з текстоподібними блоками (СТРОГО більше порогу). Чутлива до текстур (гілки, трава, відблиски).";
   drawHists();
 }
 
@@ -746,7 +762,7 @@ async function saveThresholds() {
 function histParams(k) {
   if (k === "blur") return {thr: S.t.blur_threshold, flagLeft: true, toX: v => Math.log10(Math.max(v,1))};
   if (k === "person") return {thr: S.t.person_area, flagLeft: false, toX: v => v};
-  return {thr: S.t.sign_coverage, flagLeft: false, toX: v => v};
+  return {thr: S.t.sign_method === "ocr" ? S.t.sign_text_area : S.t.sign_coverage, flagLeft: false, toX: v => v};
 }
 function drawHists() {
   if (!S.hist || !S.t) return;
@@ -781,6 +797,7 @@ function histClick(k, e) {
   const x = h.lo + (e.clientX - r.left) / r.width * (h.hi - h.lo);
   if (k === "blur") setT("blur_threshold", Math.round(Math.pow(10, x)));
   else if (k === "person") setT("person_area", +Math.max(0, x).toFixed(3));
+  else if (S.t.sign_method === "ocr") setT("sign_text_area", +Math.max(0.001, x).toFixed(4));
   else setT("sign_coverage", +Math.max(0.01, x).toFixed(3));
 }
 
@@ -841,7 +858,8 @@ function reasonLabel(r) {
   switch (r.code) {
     case "blur": return `Розмите (${fmtNum(r.value)})`;
     case "person": return `Людина ${fmtPct(r.value)}`;
-    case "sign": return `Текст ${fmtPct(r.value)}`;
+    case "sign": return r.how === "object" ? `Табличка з постаментом ${fmtPct(r.value)}` : r.how === "ocr" ? `Написи ${fmtPct(r.value)}` : `Текст ${fmtPct(r.value)}`;
+    case "watermark": return `Вотермарка «${String(r.value).slice(0, 20)}»`;
     case "duplicate": return `Дублікат (d=${r.value})`;
     case "mpx": return `${r.value} Мп`;
     case "error": return "Помилка";
@@ -857,12 +875,16 @@ function cardHTML(it) {
   const metrics = it.status === "done" ? `
       <span class="${hit("blur")}" title="Різкість">◎ ${fmtNum(it.blur)}</span>
       <span class="${hit("person")}" title="Найбільша людина">👤 ${fmtPct(it.person_area)}</span>
-      <span class="${hit("sign")}" title="Покриття текстом">▤ ${fmtPct(it.sign || 0)}</span>
+      ${it.text_area != null && S.t.sign_method === "ocr"
+        ? (it.text_area ? `<span class="${hit("sign")}" title="Площа написів: ${esc(it.text || "")}">▤ ${fmtPct(it.text_area)}</span>` : "")
+        : `<span class="${hit("sign")}" title="Покриття текстом">▤ ${fmtPct(it.sign || 0)}</span>`}
+      ${it.watermark ? `<span class="${hit("watermark")}" title="Вотермарка: ${esc(it.watermark)}">© ${esc(it.watermark.slice(0, 14))}</span>` : ""}
       ${it.width ? `<span class="${hit("mpx")}" title="Роздільність оригіналу">${(it.width*it.height/1e6).toFixed(1)} Мп</span>` : ""}`
     : `<span>${it.status === "error" ? esc(it.error || "помилка") : "очікує аналізу"}</span>`;
   return `<div class="card" data-id="${it.id}">
     <div class="thumb" data-open="${it.id}">
-      <img loading="lazy" src="${it.thumb}" alt="${esc(it.title)}">
+      <img loading="lazy" src="${it.thumb}" alt="${esc(it.title)}" onload="placeOverlay(this)">
+      ${textBoxesHTML(it)}
       <div class="tags">${tags}</div>${mb}
     </div>
     <div class="cbody">
@@ -872,6 +894,23 @@ function cardHTML(it) {
       <div class="cactions">${decisionBtns(it)}</div>
     </div></div>`;
 }
+
+// Рамки написів / вотермарки поверх мініатюри (мініатюра обрізана object-fit: cover,
+// тому шар рамок підганяється під реальні розміри зображення)
+function textBoxesHTML(it) {
+  const showSign = S.t.sign_method === "ocr";
+  const boxes = (it.text_boxes || []).filter(b => b.length === 5 && (b[4] === "watermark" || showSign));
+  if (!boxes.length) return "";
+  return `<div class="ovl">${boxes.map(([x1, y1, x2, y2, kind]) =>
+    `<div class="tbox ${kind}" style="left:${x1*100}%;top:${y1*100}%;width:${(x2-x1)*100}%;height:${(y2-y1)*100}%"></div>`).join("")}</div>`;
+}
+function placeOverlay(img) {
+  const ov = img.parentElement.querySelector(".ovl"); if (!ov || !img.naturalWidth) return;
+  const cw = img.clientWidth, ch = img.clientHeight, iw = img.naturalWidth, ih = img.naturalHeight;
+  const sc = Math.max(cw / iw, ch / ih), dw = iw * sc, dh = ih * sc;
+  Object.assign(ov.style, {left: (cw - dw) / 2 + "px", top: (ch - dh) / 2 + "px", width: dw + "px", height: dh + "px"});
+}
+window.addEventListener("resize", debounce(() => document.querySelectorAll(".thumb img").forEach(placeOverlay), 150));
 
 function renderGrid(appended) {
   const g = $("#grid");
@@ -958,8 +997,18 @@ function closeLightbox() {
   $(`.card[data-id="${S.items[S.focusIdx]?.id}"]`)?.scrollIntoView({block:"nearest"});
 }
 function drawBoxes() {
-  const wrap = $("#lbWrap"); wrap.querySelectorAll(".pbox").forEach(b => b.remove());
+  const wrap = $("#lbWrap"); wrap.querySelectorAll(".pbox,.tbox,.obox").forEach(b => b.remove());
   const it = S.items[S.lbIndex]; if (!it || !S.showBoxes) return;
+  const place = (cls, [x1, y1, x2, y2], title) => {
+    const d = document.createElement("div"); d.className = cls; if (title) d.title = title;
+    Object.assign(d.style, {left: x1*100+"%", top: y1*100+"%", width: (x2-x1)*100+"%", height: (y2-y1)*100+"%"});
+    wrap.appendChild(d);
+  };
+  if (S.t.sign_method === "ocr" && it.sign_object_box && it.text_area)
+    place("obox", it.sign_object_box, `Табличка з постаментом (оцінка): ${fmtPct(it.sign_object || 0)} кадру`);
+  (it.text_boxes || []).forEach(b => {
+    if (b.length === 5 && (b[4] === "watermark" || S.t.sign_method === "ocr")) place("tbox " + b[4], b);
+  });
   (it.persons || []).forEach(p => {
     if (p.conf < S.t.person_confidence) return;
     const [x1, y1, x2, y2] = p.box;
@@ -989,14 +1038,17 @@ function renderLbSide() {
       <dt>Автор</dt><dd>${esc(it.author || "—")}</dd>
       <dt>Різкість</dt><dd>${fmtNum(it.blur)} <span class="muted">(поріг ${fmtNum(S.t.blur_threshold)})</span></dd>
       <dt>Людей</dt><dd>${nPersons}, найбільша ${fmtPct(it.person_area)}</dd>
-      <dt>Текст</dt><dd>${fmtPct(it.sign || 0)}</dd>
+      ${it.text_area != null ? `<dt>Написи</dt><dd>${it.text_area ? `${fmtPct(it.text_area)} кадру${it.text ? ` — «${esc(it.text.slice(0, 60))}»` : ""}` : "—"}</dd>
+      <dt>З постаментом</dt><dd>${it.sign_object ? `${fmtPct(it.sign_object)} кадру <span class="muted">(оцінка, червона рамка)</span>` : "—"}</dd>
+      <dt>Вотермарка</dt><dd>${it.watermark ? `«${esc(it.watermark)}» <span class="muted">(жовта рамка)</span>` : "—"}</dd>` : ""}
+      <dt>Текст (евристика)</dt><dd>${fmtPct(it.sign || 0)}</dd>
       <dt>Розмір</dt><dd>${it.width ? `${it.width}×${it.height} (${(it.width*it.height/1e6).toFixed(1)} Мп)` : "—"}</dd>
       <dt>Автовердикт</dt><dd>${{ok:"пройшло", flagged:"відсіяно", error:"помилка", pending:"в черзі"}[it.auto_verdict]}</dd>
       ${it.page_id ? `<dt>pageId</dt><dd>${it.page_id}</dd>` : ""}
     </dl>
     <div>${it.page_url ? `<a href="${esc(it.page_url)}" target="_blank" rel="noopener">Відкрити на Commons ↗</a>` : `<a href="/api/images/${it.id}/original" target="_blank">Оригінал ↗</a>`}</div>
     <div class="keys"><kbd>←</kbd> <kbd>→</kbd> навігація · <kbd>A</kbd> залишити · <kbd>R</kbd> відхилити · <kbd>U</kbd> скинути ·
-      <kbd>B</kbd> рамки людей · <kbd>Esc</kbd> закрити</div>`;
+      <kbd>B</kbd> рамки людей і написів · <kbd>Esc</kbd> закрити</div>`;
   $("#lbSide").querySelectorAll("[data-dec]").forEach(b => b.onclick = () =>
     decide(it.id, it.manual === b.dataset.dec ? null : b.dataset.dec));
   const dupEl = $("#lbSide [data-dup]");

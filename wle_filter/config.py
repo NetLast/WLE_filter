@@ -43,9 +43,15 @@ class Thresholds:
     person_confidence: float = 0.25
     person_area: float = 0.05
 
-    # SIGN_COVERAGE_MIN
+    # Таблички / написи
     sign_enabled: bool = True
-    sign_coverage: float = 0.15
+    sign_method: str = "ocr"          # "ocr" — розпізнавання тексту; "legacy" — евристика main.py
+    sign_text_area: float = 0.015     # ocr: мін. сумарна площа написів (багато табличок/вивісок)
+    sign_object_area: float = 0.15    # ocr: мін. площа таблички разом з постаментом
+    sign_coverage: float = 0.15       # legacy: SIGN_COVERAGE_MIN
+
+    # Вотермарка: дрібний поодинокий напис біля краю кадру (лише OCR)
+    watermark_enabled: bool = True
 
     # HASH_THRESHOLD / HASH_TYPE
     duplicate_enabled: bool = True
@@ -84,6 +90,8 @@ class Thresholds:
             t.hash_type = "dhash"
         if t.duplicate_scope not in ("all", "author"):
             t.duplicate_scope = "all"
+        if t.sign_method not in ("ocr", "legacy"):
+            t.sign_method = "ocr"
         t.person_confidence = max(t.person_confidence, PERSON_CONF_FLOOR)
         return t
 

@@ -79,7 +79,7 @@ def _sort_key(sort: str):
     return {
         "blur": lambda r: (r["blur"] if r["blur"] is not None else 1e12),
         "person": lambda r: -r["person_area"],
-        "sign": lambda r: -(r["sign"] or 0),
+        "sign": lambda r: -(r["text_area"] if r.get("text_area") is not None else (r["sign"] or 0)),
         "title": lambda r: r["title"].lower(),
     }.get(sort, lambda r: r["seq"])
 
@@ -99,7 +99,9 @@ def _merge(images: list[dict], evals: list[dict]) -> list[dict]:
 
 def _public(item: dict) -> dict:
     keys = ("id", "seq", "title", "author", "page_id", "page_url", "timestamp", "width", "height",
-            "status", "error", "blur", "blur_global", "sign", "text", "text_boxes", "persons", "person_area",
+            "status", "error", "blur", "blur_global", "sign", "text_area", "text", "watermark", "text_boxes",
+            "sign_object", "sign_object_box",
+            "persons", "person_area",
             "horizon_angle", "horizon_conf", "horizon_row", "shadows", "highlights", "sat_clip",
             "outdated", "reasons", "auto_verdict", "verdict", "manual", "note")
     d = {k: item.get(k) for k in keys}
@@ -137,7 +139,8 @@ def create_app(store: Store | None = None, worker: Worker | None = None) -> Fast
 
     @app.get("/api/info")
     def info():
-        return {"version": __version__, "reasons": REASON_LABELS,
+        from .analysis import get_ocr
+        return {"version": __version__, "reasons": REASON_LABELS, "ocr": get_ocr() is not None,
                 "person_conf_floor": config.PERSON_CONF_FLOOR,
                 "data_dir": str(store.path.parent)}
 
@@ -264,7 +267,9 @@ def create_app(store: Store | None = None, worker: Worker | None = None) -> Fast
             "blur": _hist(blurs, 1, max(blurs + [1000]), log=True),
             "person": _hist([it["person_area"] for it in done if it["person_area"] > 0], 0, 1),
             "person_zero": sum(1 for it in done if it["person_area"] == 0),
-            "sign": _hist([it["sign"] or 0 for it in done], 0, max([it["sign"] or 0 for it in done] + [0.5])),
+            "sign": _hist(sign_vals := [
+                (it["text_area"] if t.sign_method == "ocr" and it.get("text_area") is not None else it["sign"]) or 0
+                for it in done], 0, max(sign_vals + [0.05 if t.sign_method == "ocr" else 0.5])),
         }
 
         view = q.view
@@ -357,6 +362,8 @@ def create_app(store: Store | None = None, worker: Worker | None = None) -> Fast
                     "manual": it["manual"], "note": it["note"],
                     "reasons": [{k: v for k, v in r.items() if k != "of"} for r in it["reasons"]],
                     "metrics": {"blur": it["blur"], "sign": it["sign"],
+                                "text_area": it.get("text_area"), "text": it.get("text") or None,
+                                "watermark": it.get("watermark") or None,
                                 "person_area": it["person_area"],
                                 "width": it["width"], "height": it["height"]},
                 } for it in items],
@@ -367,6 +374,7 @@ def create_app(store: Store | None = None, worker: Worker | None = None) -> Fast
 
         buf = io.StringIO()
         cols = ["file", "page_id", "author", "blur_score", "person_area", "sign_coverage",
+                "text_area", "text", "watermark",
                 "duplicate_of", "width", "height", "verdict", "auto_verdict", "manual",
                 "reasons", "note", "page_url", "local_path"]
         w = csv.DictWriter(buf, fieldnames=cols)
@@ -376,6 +384,8 @@ def create_app(store: Store | None = None, worker: Worker | None = None) -> Fast
             w.writerow({"file": it["title"], "page_id": it["page_id"] or "", "author": it["author"] or "",
                         "blur_score": it["blur"] if it["blur"] is not None else "",
                         "person_area": it["person_area"], "sign_coverage": it["sign"] if it["sign"] is not None else "",
+                        "text_area": it["text_area"] if it.get("text_area") is not None else "",
+                        "text": it.get("text") or "", "watermark": it.get("watermark") or "",
                         "duplicate_of": dup, "width": it["width"] or "", "height": it["height"] or "",
                         "verdict": it["verdict"], "auto_verdict": it["auto_verdict"],
                         "manual": it["manual"] or "",

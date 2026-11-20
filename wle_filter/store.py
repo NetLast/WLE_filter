@@ -67,6 +67,7 @@ NEW_COLUMNS = {
     "horizon_angle": "REAL", "horizon_conf": "REAL", "horizon_row": "REAL",
     "shadows": "REAL", "highlights": "REAL", "sat_clip": "REAL",
     "embed": "BLOB", "mver": "INTEGER NOT NULL DEFAULT 0",
+    "text_area": "REAL", "watermark": "TEXT", "sign_object": "REAL", "sign_object_box": "TEXT",
 }
 
 RUN_FIELDS = ("id", "name", "nomination", "source_type", "source", "status",
@@ -193,12 +194,15 @@ class Store:
         self._exec(
             "UPDATE images SET status='done', error=NULL, blur=?, blur_global=?, sign=?, text=?,"
             " text_boxes=?, dhash=?, phash=?, persons=?, horizon_angle=?, horizon_conf=?, horizon_row=?,"
-            " shadows=?, highlights=?, sat_clip=?, embed=?, mver=? WHERE id=?",
+            " shadows=?, highlights=?, sat_clip=?, embed=?, text_area=?, watermark=?, sign_object=?,"
+            " sign_object_box=?, mver=? WHERE id=?",
             (m["blur"], m.get("blur_global"), m["sign"], m.get("text") or None,
              json.dumps(m.get("text_boxes") or []), m["dhash"], m["phash"], json.dumps(m["persons"]),
              m.get("horizon_angle"), m.get("horizon_conf"), m.get("horizon_row"),
              m.get("shadows"), m.get("highlights"), m.get("sat_clip"),
-             emb.tobytes() if emb is not None else None, METRICS_VERSION, image_id))
+             emb.tobytes() if emb is not None else None, m.get("text_area"), m.get("watermark") or None,
+             m.get("sign_object"), json.dumps(m.get("sign_object_box")) if m.get("sign_object_box") else None,
+             METRICS_VERSION, image_id))
 
     def embeddings(self, run_id: int) -> list[tuple[int, str | None, bytes]]:
         """(id, author, embed|None) уже проаналізованих фото поточної версії, за порядком seq."""
@@ -243,6 +247,7 @@ class Store:
     def _decode(r: dict) -> dict:
         r["persons"] = json.loads(r["persons"]) if r.get("persons") else []
         r["text_boxes"] = json.loads(r["text_boxes"]) if r.get("text_boxes") else []
+        r["sign_object_box"] = json.loads(r["sign_object_box"]) if r.get("sign_object_box") else None
         r.pop("embed", None)
         if r.get("status") == "done" and (r.get("mver") or 0) < METRICS_VERSION:
             r["outdated"] = True
