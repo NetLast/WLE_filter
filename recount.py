@@ -1,190 +1,137 @@
-import csv, os, html, time, requests
+"""Перерахунок вердиктів з іншими порогами — без повторного аналізу фото.
 
-# ─── НАЛАШТУВАННЯ ─────────────────────────────────────────────
-HASH_THRESHOLD        = 12
-HASH_TYPE             = "dhash"
-BLUR_THRESHOLD        = 200
-PERSON_CONFIDENCE     = 0.25
-PERSON_AREA_THRESHOLD = 0.05
-SIGN_COVERAGE_MIN     = 0.15
+    python recount.py --run 3                        # пороги, збережені для прогону
+    python recount.py --run 3 --nomination quantity  # пороги пресету
+    python recount.py --legacy-csv ~/Desktop/wle_results/progress.csv
 
-INPUT_CSV  = os.path.join(os.path.expanduser("~"), "Desktop", "wle_results", "progress.csv")
-OUTPUT_DIR = os.path.join(os.path.expanduser("~"), "Desktop", "wle_results")
+Для старого progress.csv (формат v2) поріг упевненості детектора людей
+і поріг дублікатів змінити неможливо: там збережено лише результат.
+"""
+from __future__ import annotations
 
-HEADERS = {"User-Agent": "WLE-Filter-Bot/1.0 (research; commons.wikimedia.org)"}
+import argparse
+import csv
+import os
+import sys
+from pathlib import Path
 
-
-# ─── Отримати URL з Wikimedia для списку файлів ───────────────
-def get_thumb_urls_batch(file_titles):
-    """Отримує thumb URL для до 50 файлів за один запит."""
-    urls = {}
-    titles_str = "|".join(file_titles)
-    try:
-        r = requests.get(
-            "https://commons.wikimedia.org/w/api.php",
-            params={
-                "action":   "query",
-                "titles":   titles_str,
-                "prop":     "imageinfo",
-                "iiprop":   "url",
-                "iiurlwidth": 400,
-                "format":   "json"
-            },
-            headers=HEADERS, timeout=30
-        )
-        data = r.json()
-        for page in data["query"]["pages"].values():
-            title = page.get("title", "")
-            info  = page.get("imageinfo", [{}])[0]
-            url   = info.get("thumburl") or info.get("url", "")
-            if url:
-                urls[title] = url
-    except Exception as e:
-        print(f"  Помилка API: {e}")
-    return urls
+from wle_filter import config
+from wle_filter.config import Thresholds
+from wle_filter.store import Store
+from wle_filter.verdict import evaluate, reasons_text
 
 
-def get_commons_url(file_title):
-    """Повертає посилання на сторінку файлу на Commons."""
-    name = file_title.replace("File:", "").replace(" ", "_")
-    return f"https://commons.wikimedia.org/wiki/File:{name}"
+def evaluate_run(store: Store, run_id: int, thresholds: dict | None = None):
+    run = store.get_run(run_id)
+    t = Thresholds.from_dict(thresholds or run["thresholds"])
+    images = store.images(run_id)
+    return run, t, images, evaluate(images, t)
 
 
-# ─── Перерахунок ──────────────────────────────────────────────
-def recount():
-    with open(INPUT_CSV, encoding="utf-8") as f:
-        rows = list(csv.DictReader(f))
-
-    results = []
-    counts  = {"ok": 0, "flagged": 0, "error": 0}
-
-    for r in rows:
-        if r["verdict"] == "error":
-            counts["error"] += 1
-            r["reasons"] = r.get("reasons", "error")
-            results.append(r)
-            continue
-
-        reasons = []
-
-        blur = float(r["blur_score"]) if r["blur_score"] else 9999
-        if blur < BLUR_THRESHOLD:
-            reasons.append(f"blur:{blur}")
-
-        person = float(r["person_area"]) if r["person_area"] else 0
-        if person >= PERSON_AREA_THRESHOLD:
-            reasons.append(f"person:{person:.1%}")
-
-        sign = float(r["sign_coverage"]) if r["sign_coverage"] else 0
-        if sign >= SIGN_COVERAGE_MIN:
-            reasons.append(f"sign:{sign:.1%}")
-
-        if r.get("duplicate_of"):
-            reasons.append(f"duplicate:{r['duplicate_of'][:40]}")
-
-        r["reasons"] = " | ".join(reasons)
-        r["verdict"] = "flagged" if reasons else "ok"
-        counts[r["verdict"]] += 1
-        results.append(r)
-
-    # ─── Отримати URL для відсіяних ───────────────────────────
-    flagged = [r for r in results if r["verdict"] == "flagged"]
-    ok      = [r for r in results if r["verdict"] == "ok"]
-    errors  = [r for r in results if r["verdict"] == "error"]
-
-    print(f"Отримую URL для {len(flagged)} відсіяних фото з Wikimedia...")
-    thumb_urls = {}
-
-    # Батчами по 50 файлів за раз
-    batch_size = 50
-    flagged_titles = [r["file"] for r in flagged]
-    for i in range(0, len(flagged_titles), batch_size):
-        batch = flagged_titles[i:i+batch_size]
-        batch_urls = get_thumb_urls_batch(batch)
-        thumb_urls.update(batch_urls)
-        print(f"  {min(i+batch_size, len(flagged_titles))}/{len(flagged_titles)}...", end="\r")
-        time.sleep(0.5)
-    print(f"\nURL отримано: {len(thumb_urls)}")
-
-    # ─── Зберегти CSV ─────────────────────────────────────────
-    out_csv = os.path.join(OUTPUT_DIR, "results_recounted.csv")
-    with open(out_csv, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=results[0].keys())
-        writer.writeheader()
-        writer.writerows(results)
-    print(f"CSV: {out_csv}")
-
-    # ─── HTML галерея з URL ───────────────────────────────────
-    gallery_path = os.path.join(OUTPUT_DIR, "flagged_gallery_recounted.html")
-    with open(gallery_path, "w", encoding="utf-8") as f:
-        f.write(f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8">
-<title>Flagged — WLE Ukraine 2026</title>
-<style>
-body{{font-family:Arial;margin:20px;background:#f4f4f4;}}
-h1{{color:#333;font-size:clamp(16px,4vw,24px);}}
-.stats{{background:#fff;padding:12px 20px;border-radius:8px;
-        margin-bottom:20px;display:flex;gap:16px;flex-wrap:wrap;}}
-.stat{{text-align:center;min-width:60px;}}
-.stat b{{display:block;font-size:clamp(18px,5vw,22px);}}
-.grid{{display:grid;
-       grid-template-columns:repeat(auto-fill, minmax(300px, 1fr));
-       gap:16px;}}
-.card{{background:#fff;border-radius:8px;padding:10px;
-       box-shadow:0 2px 5px rgba(0,0,0,.1);}}
-img{{width:100%;border-radius:5px;display:block;}}
-.noimg{{width:100%;height:170px;background:#ddd;display:flex;
-        align-items:center;justify-content:center;color:#777;
-        border-radius:5px;font-size:13px;text-align:center;padding:10px;
-        box-sizing:border-box;}}
-.reason{{color:#c62828;font-size:13px;margin:6px 0;}}
-.name{{font-size:11px;color:#555;word-break:break-all;margin:4px 0;}}
-.commons-link{{font-size:12px;}}
-</style></head><body>
-<h1>Flagged Photos — Wiki Loves Earth Ukraine 2026</h1>
-<div class="stats">
-  <div class="stat"><b>{len(results)}</b>всього</div>
-  <div class="stat"><b style="color:#2e7d32">{len(ok)}</b>пройшли</div>
-  <div class="stat"><b style="color:#c62828">{len(flagged)}</b>відсіяно</div>
-  <div class="stat"><b style="color:#888">{len(errors)}</b>помилки</div>
-</div>
-<div class="grid">
-""")
-        for r in flagged:
-            title     = r["file"]
-            safe_name = html.escape(title)
-            reason    = html.escape(str(r.get("reasons", "")))
-            thumb_url = thumb_urls.get(title, "")
-            commons_url = get_commons_url(title)
-
-            if thumb_url:
-                img_tag = (f'<a href="{html.escape(commons_url)}" target="_blank">'
-                           f'<img src="{html.escape(thumb_url)}" loading="lazy"></a>')
-            else:
-                img_tag = (f'<div class="noimg">'
-                           f'<a href="{html.escape(commons_url)}" target="_blank">'
-                           f'фото не знайдено — відкрити на Commons</a></div>')
-
-            f.write(
-                f'<div class="card">{img_tag}'
-                f'<p class="reason"><b>{reason}</b></p>'
-                f'<p class="name">{safe_name}</p>'
-                f'<p class="commons-link">'
-                f'<a href="{html.escape(commons_url)}" target="_blank">→ Commons</a>'
-                f'</p></div>\n'
-            )
-        f.write("</div></body></html>")
-
-    print(f"Галерея: {gallery_path}")
-    print(f"\n{'='*50}")
-    print(f"ЗАВЕРШЕНО")
-    print(f"{'='*50}")
-    print(f"  Всього:   {len(results)}")
+def print_summary(store: Store, run_id: int, thresholds: dict | None = None):
+    run, t, images, ev = evaluate_run(store, run_id, thresholds)
+    counts = {"ok": 0, "flagged": 0, "error": 0, "pending": 0}
+    reasons: dict[str, int] = {}
+    for e in ev:
+        counts[e["verdict"]] = counts.get(e["verdict"], 0) + 1
+        for r in e["reasons"]:
+            reasons[r["code"]] = reasons.get(r["code"], 0) + 1
+    print("=" * 50)
+    print(f"Прогін #{run_id}: {run['name']}")
+    print("=" * 50)
+    print(f"  Всього:   {len(ev)}")
     print(f"  OK:       {counts['ok']}")
     print(f"  Flagged:  {counts['flagged']}")
     print(f"  Errors:   {counts['error']}")
-    print(f"\nГалерею можна поширити — фото підвантажуються з Wikimedia")
+    if counts["pending"]:
+        print(f"  В черзі:  {counts['pending']}")
+    for k, n in sorted(reasons.items(), key=lambda x: -x[1]):
+        print(f"    {k:10s} {n}")
+    return counts
+
+
+def export_csv(store: Store, run_id: int, thresholds: dict | None = None, path: str | None = None) -> str:
+    run, t, images, ev = evaluate_run(store, run_id, thresholds)
+    titles = {i["id"]: i["title"] for i in images}
+    path = path or str(store.path.parent / f"run_{run_id}_results.csv")
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f)
+        w.writerow(["file", "page_id", "author", "blur_score", "person_area", "sign_coverage",
+                    "duplicate_of", "verdict", "auto_verdict", "manual", "reasons", "local_path"])
+        for img, e in zip(images, ev):
+            dup = next((titles.get(r["of"], "") for r in e["reasons"] if r["code"] == "duplicate"), "")
+            w.writerow([img["title"], img["page_id"] or "", img["author"] or "",
+                        "" if img["blur"] is None else img["blur"], e["person_area"],
+                        "" if img["sign"] is None else img["sign"], dup,
+                        e["verdict"], e["auto_verdict"], e["manual"] or "",
+                        img["error"] if img["status"] == "error" else reasons_text(e["reasons"]),
+                        img["local_path"] or ""])
+    return path
+
+
+def recount_legacy_csv(path: str, t: Thresholds) -> tuple[list[dict], dict]:
+    """Перерахунок старого progress.csv (формат v2 main.py)."""
+    with open(path, encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    counts = {"ok": 0, "flagged": 0, "error": 0}
+    for r in rows:
+        if r.get("verdict") == "error":
+            counts["error"] += 1
+            continue
+        item = {
+            "blur": float(r["blur_score"]) if r.get("blur_score") else None,
+            "sign": float(r["sign_coverage"]) if r.get("sign_coverage") else None,
+            # у v2 зберігалася лише площа найбільшої людини з conf ≥ 0.25
+            "persons": [{"conf": 1.0, "area": float(r["person_area"])}] if r.get("person_area") else [],
+        }
+        from wle_filter.verdict import item_reasons
+        reasons = item_reasons(item, t)
+        if t.duplicate_enabled and r.get("duplicate_of"):
+            reasons.append({"code": "duplicate", "value": "?"})
+        r["reasons"] = reasons_text(reasons)
+        r["verdict"] = "flagged" if reasons else "ok"
+        counts[r["verdict"]] += 1
+    return rows, counts
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description="Перерахунок вердиктів WLE Filter")
+    ap.add_argument("--run", type=int, help="номер прогону в базі")
+    ap.add_argument("--nomination", help="взяти пороги з пресету (quality | quantity)")
+    ap.add_argument("--legacy-csv", help="старий progress.csv")
+    ap.add_argument("--out", help="куди записати CSV")
+    args = ap.parse_args(argv)
+
+    thresholds = None
+    if args.nomination:
+        presets = config.load_presets()
+        if args.nomination not in presets:
+            print(f"Невідома номінація: {args.nomination}")
+            return 2
+        thresholds = presets[args.nomination]["thresholds"]
+
+    if args.legacy_csv:
+        t = Thresholds.from_dict(thresholds)
+        rows, counts = recount_legacy_csv(args.legacy_csv, t)
+        out = args.out or os.path.join(os.path.dirname(args.legacy_csv), "results_recounted.csv")
+        if rows:
+            with open(out, "w", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=rows[0].keys())
+                w.writeheader()
+                w.writerows(rows)
+        print(f"Всього: {len(rows)}  OK: {counts['ok']}  Flagged: {counts['flagged']}  Errors: {counts['error']}")
+        print(f"CSV: {out}")
+        return 0
+
+    store = Store()
+    run_id = args.run or (store.list_runs() or [{}])[0].get("id")
+    if not run_id or not store.get_run(run_id):
+        print("Прогін не знайдено. Вкажіть --run або створіть прогін: python main.py run …")
+        return 1
+    print_summary(store, run_id, thresholds)
+    print(f"CSV: {export_csv(store, run_id, thresholds, args.out)}")
+    return 0
 
 
 if __name__ == "__main__":
-    recount()
+    sys.exit(main())

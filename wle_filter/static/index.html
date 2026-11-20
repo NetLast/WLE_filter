@@ -1,0 +1,1150 @@
+<!DOCTYPE html>
+<html lang="uk" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#3366cc">
+<meta name="mobile-web-app-capable" content="yes">
+<title>WLE Filter — перевірка фото</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%233366cc'/%3E%3C/svg%3E">
+<script>
+  // Тема застосовується до завантаження стилів, щоб не було «спалаху» світлої теми
+  try { document.documentElement.dataset.theme = localStorage.getItem("wle-theme") || "auto"; } catch (e) {}
+</script>
+<!-- Wikimedia Codex: дизайн-токени + CSS-only компоненти (static/codex, GPL-2.0-or-later) -->
+<link rel="stylesheet" href="/static/codex/codex-theme.css">
+<link rel="stylesheet" href="/static/codex/codex.style.css">
+<style>
+/* Усі кольори, рамки й радіуси — токени Codex (див. static/codex/codex-theme.css) */
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html{font-size:100%}
+body{margin:0;background:var(--background-color-neutral-subtle);color:var(--color-base);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Lato,"Helvetica Neue",Helvetica,Arial,sans-serif;
+  font-size:var(--font-size-small,.875rem);line-height:var(--line-height-small,1.375rem)}
+a{color:var(--color-progressive)} a:visited{color:var(--color-visited)}
+.muted{color:var(--color-subtle)}
+.small{font-size:var(--font-size-x-small,.75rem)}
+.cdx-select.compact{min-width:0}
+.cdx-text-input input{width:100%}
+.cdx-button.full{max-width:none;width:100%}
+.cdx-button kbd{font-weight:400}
+hr.sep{border:0;border-top:1px solid var(--border-color-muted);margin:4px 0}
+
+/* ── Шапка ── */
+header{position:sticky;top:0;z-index:20;background:var(--background-color-base);border-bottom:1px solid var(--border-color-subtle);
+  display:flex;align-items:center;gap:12px;padding:8px 16px;min-height:52px}
+.brand{font-weight:700;font-size:var(--font-size-large,1.125rem);display:flex;align-items:center;gap:8px;white-space:nowrap;color:var(--color-emphasized)}
+.brand .dot{width:12px;height:12px;border-radius:50%;background:var(--background-color-progressive)}
+#runSelect{flex:0 1 380px;min-width:0;max-width:420px}
+#newRunBtn,#pauseBtn,#resumeBtn,#exportMenu,#runMenu,#themeBtn{flex:none}
+.run-progress{flex:1 1 260px;display:flex;flex-direction:column;justify-content:center;gap:4px;min-width:160px;max-width:480px}
+#exportMenu{margin-left:auto}
+#themeBtn svg{width:20px;height:20px;display:block}
+#runMsg{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.spacer{flex:1}
+
+/* Випадаюче меню у стилі Codex Menu */
+.menu{position:relative}
+.menu-list{display:none;position:absolute;right:0;top:calc(100% + 2px);background:var(--background-color-base);
+  border:1px solid var(--border-color-base);border-radius:var(--border-radius-base,2px);
+  box-shadow:0 2px 2px 0 var(--box-shadow-color-alpha-base);min-width:240px;padding:0;z-index:30}
+.menu.open .menu-list{display:block}
+.menu-item{display:block;width:100%;text-align:left;border:0;background:none;padding:6px 12px;min-height:32px;
+  font:inherit;font-size:var(--font-size-medium,1rem);color:var(--color-base);cursor:pointer}
+.menu-item:hover{background:var(--background-color-interactive-subtle--hover)}
+.menu-item.danger{color:var(--color-destructive)}
+
+/* ── Макет ── */
+.layout{display:grid;grid-template-columns:344px 1fr;min-height:calc(100dvh - 52px)}
+aside{background:var(--background-color-base);border-right:1px solid var(--border-color-subtle);padding:16px;overflow:auto;
+  position:sticky;top:52px;height:calc(100dvh - 52px)}
+.section-title{font-size:var(--font-size-medium,1rem);font-weight:700;margin:0 0 8px;color:var(--color-emphasized)}
+.preset-row{display:flex;gap:8px;align-items:center;margin-bottom:4px}
+.preset-row .cdx-select{flex:1;min-width:0}
+.preset-desc{margin:0 0 12px}
+.filter{border:1px solid var(--border-color-subtle);border-radius:var(--border-radius-base,2px);padding:8px 12px 10px;margin-bottom:8px;
+  background:var(--background-color-base)}
+.filter.off .fbody{opacity:.45;pointer-events:none}
+.fhead{display:flex;align-items:center;gap:8px;min-height:32px}
+.fhead .cdx-toggle-switch{flex:1;margin:0}
+.fhead .cdx-label__label__text{font-size:var(--font-size-medium,1rem)}
+.count{font-size:var(--font-size-x-small,.75rem);border-radius:9999px;padding:0 8px;line-height:1.25rem;
+  background:var(--background-color-error-subtle);color:var(--color-error);font-weight:700;font-variant-numeric:tabular-nums;flex:none}
+.param{display:grid;grid-template-columns:1fr 84px;gap:8px;align-items:center;margin-top:6px}
+.param .plabel{grid-column:1/-1;font-size:var(--font-size-x-small,.75rem);color:var(--color-subtle);display:flex;justify-content:space-between}
+.param .plabel b{color:var(--color-base);font-variant-numeric:tabular-nums}
+input[type=range]{width:100%;accent-color:var(--color-progressive)}
+.param .cdx-text-input{min-width:0}
+.param .cdx-text-input__input{text-align:right;min-width:0}
+canvas.hist{width:100%;height:46px;display:block;cursor:crosshair;margin-top:4px}
+.hint{font-size:var(--font-size-x-small,.75rem);color:var(--color-subtle);margin:6px 0 0;line-height:1.35}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px}
+.row2 .cdx-select{min-width:0;width:100%;font-size:var(--font-size-small,.875rem)}
+.aside-actions{display:flex;gap:8px;margin-top:8px}
+.save-state{font-size:var(--font-size-x-small,.75rem);color:var(--color-subtle);text-align:right;min-height:18px;margin-top:4px}
+
+/* ── Галерея ── */
+section.main{padding:16px 20px;min-width:0}
+.stats{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.stat{background:var(--background-color-base);border:1px solid var(--border-color-subtle);border-radius:var(--border-radius-base,2px);padding:6px 14px;min-width:100px}
+.stat b{display:block;font-size:var(--font-size-xx-large,1.5rem);line-height:1.3;font-variant-numeric:tabular-nums;color:var(--color-emphasized)}
+.stat.ok b{color:var(--color-success)} .stat.bad b{color:var(--color-error)} .stat.man b{color:var(--color-progressive)} .stat.err b{color:var(--color-subtle)}
+.cdx-tabs{margin-bottom:12px}
+.cdx-tabs__list__item .n{font-weight:400;color:var(--color-subtle);margin-left:4px;font-variant-numeric:tabular-nums}
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chips .cdx-toggle-button{font-size:var(--font-size-small,.875rem);min-height:28px}
+#searchWrap{width:220px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--card,260px),1fr));gap:12px}
+.card{background:var(--background-color-base);border:1px solid var(--border-color-subtle);border-radius:var(--border-radius-base,2px);
+  overflow:hidden;display:flex;flex-direction:column;transition:opacity .2s}
+.card:hover{border-color:var(--border-color-base)}
+.card.dim{opacity:.45}
+.card.focus{box-shadow:0 0 0 2px var(--border-color-progressive);border-color:var(--border-color-progressive)}
+.thumb{position:relative;aspect-ratio:4/3;background:var(--background-color-interactive);cursor:zoom-in;overflow:hidden}
+.thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.thumb .tags{position:absolute;left:6px;top:6px;right:6px;display:flex;gap:4px;flex-wrap:wrap}
+.thumb .mbadge{position:absolute;right:6px;bottom:6px}
+.cdx-info-chip{font-size:var(--font-size-x-small,.75rem)}
+.thumb .cdx-info-chip{box-shadow:0 1px 3px rgba(0,0,0,.25)}
+.cbody{padding:8px 10px;display:flex;flex-direction:column;gap:2px;flex:1}
+.ctitle{font-weight:700;word-break:break-word;line-height:1.3;max-height:2.6em;overflow:hidden}
+.metrics{font-size:var(--font-size-x-small,.75rem);color:var(--color-subtle);display:flex;gap:10px;flex-wrap:wrap;font-variant-numeric:tabular-nums}
+.metrics .hit{color:var(--color-error);font-weight:700}
+.cactions{display:flex;gap:6px;margin-top:auto;padding-top:8px}
+.cactions .cdx-button{flex:1;max-width:none}
+.more{display:flex;justify-content:center;padding:20px}
+.empty{grid-column:1/-1}
+.welcome{max-width:600px;margin:64px auto;padding:0 16px}
+.welcome h1{font-family:'Linux Libertine','Georgia','Times',serif;font-weight:400;font-size:var(--font-size-xxx-large,1.75rem);margin:0 0 8px;color:var(--color-emphasized)}
+
+/* ── Лайтбокс ── */
+#lightbox{position:fixed;inset:0;touch-action:pan-y;background:rgba(16,20,24,.94);z-index:50;display:none;grid-template-columns:1fr 360px}
+#lightbox.open{display:grid}
+.lb-stage{position:relative;display:flex;align-items:center;justify-content:center;padding:24px 64px;min-width:0}
+.lb-wrap{position:relative;max-width:100%;max-height:100%}
+.lb-wrap img{max-width:100%;max-height:calc(100vh - 48px);display:block}
+.pbox{position:absolute;border:2px solid #fc3;pointer-events:none}
+.pbox.hit{border-color:#f54739}
+.pbox span{position:absolute;left:-2px;top:-20px;background:#fc3;color:#101418;font-size:11px;font-weight:700;padding:1px 4px;white-space:nowrap}
+.pbox.hit span{background:#f54739;color:#fff}
+.lb-nav{position:absolute;top:50%;transform:translateY(-50%)}
+.lb-nav.cdx-button{min-width:40px;min-height:56px;font-size:1.5rem;background:rgba(255,255,255,.12);color:#fff;border-color:transparent}
+.lb-nav.cdx-button:hover{background:rgba(255,255,255,.24)}
+.lb-prev{left:12px}.lb-next{right:12px}
+#lbClose.cdx-button{position:absolute;right:12px;top:12px;background:rgba(255,255,255,.12);color:#fff;border-color:transparent}
+.lb-side{background:var(--background-color-base);padding:16px;overflow:auto;display:flex;flex-direction:column;gap:12px}
+.lb-side h3{margin:0;font-size:var(--font-size-medium,1rem);word-break:break-word}
+.lb-side .cdx-message{font-size:var(--font-size-small,.875rem)}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:0;font-variant-numeric:tabular-nums}
+.kv dt{color:var(--color-subtle)} .kv dd{margin:0}
+.dup-orig{display:flex;gap:8px;align-items:center;cursor:pointer;border:1px solid var(--border-color-warning);
+  background:var(--background-color-warning-subtle);border-radius:var(--border-radius-base,2px);padding:6px}
+.dup-orig img{width:80px;height:60px;object-fit:cover}
+.lb-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.lb-actions .cdx-button{max-width:none}
+.lb-full .lbl{display:inline!important}
+.keys{font-size:var(--font-size-x-small,.75rem);color:var(--color-subtle);line-height:1.8}
+kbd{background:var(--background-color-interactive-subtle);border:1px solid var(--border-color-subtle);border-bottom-width:2px;
+  border-radius:var(--border-radius-base,2px);padding:0 4px;font-size:11px;font-family:inherit;color:var(--color-base)}
+.cdx-text-input textarea{width:100%;min-height:56px;resize:vertical;font:inherit;padding:6px 8px;
+  border:1px solid var(--border-color-base);border-radius:var(--border-radius-base,2px);background:var(--background-color-base);color:var(--color-base)}
+.cdx-text-input textarea:focus{outline:0;border-color:var(--border-color-progressive);box-shadow:inset 0 0 0 1px var(--box-shadow-color-progressive--focus,#36c)}
+
+/* ── Діалог (Codex Dialog у нативному <dialog>) ── */
+dialog.wle-dialog{border:0;padding:0;background:transparent;max-width:none;overflow:visible}
+dialog.wle-dialog::backdrop{background:var(--background-color-backdrop-light,rgba(255,255,255,.65))}
+dialog.wle-dialog{max-height:100dvh}
+dialog.wle-dialog .cdx-dialog{width:min(560px,calc(100vw - 2rem));max-width:none;max-height:calc(100dvh - 2rem)}
+dialog.wle-dialog .cdx-dialog__body{overflow-y:auto;flex:1 1 auto;min-height:0;overscroll-behavior:contain}
+dialog.wle-dialog .cdx-dialog__header,dialog.wle-dialog .cdx-dialog__footer{flex:none}
+.cdx-dialog__body .cdx-field{margin-bottom:16px}
+.cdx-dialog__body .cdx-label{margin-bottom:4px}
+.cdx-dialog__body .cdx-label__description{font-size:var(--font-size-x-small,.75rem)}
+.cdx-toggle-button-group{width:100%;display:flex}
+.cdx-toggle-button-group .cdx-toggle-button{flex:1;max-width:none}
+.fs{border:1px solid var(--border-color-subtle);border-radius:var(--border-radius-base,2px);max-height:200px;overflow:auto;margin-top:6px}
+.fs div{padding:5px 10px;cursor:pointer;border-bottom:1px solid var(--border-color-muted)}
+.fs div:hover{background:var(--background-color-interactive-subtle--hover)}
+.field-row{display:grid;grid-template-columns:2fr 1fr;gap:12px;align-items:end}
+.field-row .cdx-field{min-width:0}
+.field-row .cdx-text-input{min-width:0;width:100%}
+#newRunErr:empty{display:none}
+
+/* ── Сповіщення ── */
+#toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:60;opacity:0;transition:opacity .25s;pointer-events:none;
+  max-width:min(480px,calc(100vw - 32px));box-shadow:0 4px 8px var(--box-shadow-color-alpha-base)}
+#toast.show{opacity:1}
+/* ═══ Адаптивність ═══════════════════════════════════════════════════════
+   ≥1100px — бокова панель; 700–1099 (планшет) — висувна панель;
+   <700 (телефон) — висувна панель, 2 колонки карток, компактна шапка. */
+#drawerBtn,.drawer-head,#drawerBackdrop{display:none}
+.lbl-short{display:none}
+
+@media (max-width:1099px){
+  .layout{grid-template-columns:1fr}
+  aside{position:fixed;top:0;left:0;bottom:0;z-index:45;width:min(380px,92vw);height:100dvh;
+    transform:translateX(-102%);transition:transform .22s ease;box-shadow:0 0 16px rgba(0,0,0,.25);
+    padding-top:0;overscroll-behavior:contain}
+  aside.open{transform:none}
+  #drawerBackdrop{position:fixed;inset:0;z-index:44;background:var(--background-color-backdrop-dark,rgba(0,0,0,.4))}
+  #drawerBackdrop.open{display:block}
+  .drawer-head{display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:2;
+    background:var(--background-color-base);margin:0 -16px 8px;padding:8px 8px 8px 16px;border-bottom:1px solid var(--border-color-subtle)}
+  .drawer-head .section-title{margin:0}
+  aside>.section-title{display:none}
+  header{flex-wrap:wrap;row-gap:6px}
+  .brand{flex:1}
+  #newRunBtn{order:1} #exportMenu{order:2;margin-left:0} #runMenu{order:3} #themeBtn{order:4}
+  #runSelect{order:10;flex:1 1 300px;max-width:none}
+  .run-progress{order:11;flex:1 1 240px;max-width:none}
+  #pauseBtn,#resumeBtn{order:12}
+  header{position:static}
+  #drawerBtn{display:inline-flex}
+  section.main{padding:12px}
+  .lb-wrap img{max-height:calc(100dvh - 48px)}
+}
+
+@media (max-width:899px){
+  /* Перегляд фото: зображення зверху, інформація знизу */
+  #lightbox.open{display:flex;flex-direction:column}
+  .lb-stage{flex:0 0 auto;height:min(58dvh,70vw + 40px);padding:8px 8px}
+  .lb-wrap img{max-height:calc(min(58dvh,70vw + 40px) - 16px)}
+  .lb-side{flex:1;max-height:none;min-height:0;padding:12px 14px calc(12px + env(safe-area-inset-bottom))}
+  .lb-actions{position:sticky;top:-12px;z-index:2;background:var(--background-color-base);padding:6px 0;margin:-6px 0}
+  .lb-nav.cdx-button{min-height:48px;min-width:36px;font-size:1.25rem}
+  .lb-prev{left:4px}.lb-next{right:4px}
+  #lbClose.cdx-button{right:6px;top:6px}
+}
+
+@media (max-width:699px){
+  /* Шапка: бренд + дії в першому рядку, прогін і прогрес нижче */
+  header{position:static;flex-wrap:wrap;gap:8px;padding:8px 10px}
+  .brand{flex:1}
+  #newRunBtn{order:1}
+  #exportMenu{order:2;margin-left:0}
+  #runMenu{order:3}
+  #themeBtn{order:4}
+  #runSelect{order:10;flex:1 1 100%;min-width:0;max-width:none}
+  .run-progress{order:11;flex:1 1 100%;max-width:none}
+  #pauseBtn,#resumeBtn{order:12;flex:1 1 100%;max-width:none}
+  .lbl-full{display:none} .lbl-short{display:inline}
+  .menu-list{right:-40px;min-width:min(280px,calc(100vw - 20px))}
+
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(72px,1fr));gap:6px}
+  .stat{min-width:0;padding:4px 8px}
+  .stat b{font-size:var(--font-size-x-large,1.25rem)}
+  .stat .small{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+  .toolbar{gap:6px}
+  #searchWrap{order:-2;flex:1 1 100%;width:auto}
+  #drawerBtn{order:-1}
+  #sort{flex:1;min-width:0}
+  #cardSize{display:none}
+  .chips{order:5;flex:1 1 100%;flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px;scrollbar-width:none}
+  .chips::-webkit-scrollbar{display:none}
+  .chips .cdx-toggle-button{flex:none}
+  .toolbar .spacer{display:none}
+
+  .grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .cbody{padding:6px 8px}
+  .ctitle{font-size:var(--font-size-x-small,.75rem)}
+  .metrics{gap:6px}
+  .thumb .cdx-info-chip{font-size:10px;padding:0 4px}
+  .cactions{gap:4px}
+  .cactions .cdx-button{padding:0 4px}
+  .cactions .lbl{display:none}
+
+  .welcome{margin:32px auto}
+  dialog.wle-dialog .cdx-dialog{width:calc(100vw - 16px);max-height:calc(100dvh - 16px)}
+  .field-row{grid-template-columns:1fr}
+}
+@media (max-width:359px){ .grid{grid-template-columns:1fr} }
+
+/* Вкладки прокручуються, якщо не вміщаються */
+.cdx-tabs__header{overflow-x:auto;scrollbar-width:none}
+.cdx-tabs__header::-webkit-scrollbar{display:none}
+.cdx-tabs__list{display:flex;flex-wrap:nowrap}
+.cdx-tabs__list__item{white-space:nowrap;flex:none}
+
+/* Сенсорні екрани: більші цілі для пальця, без підказок клавіатури */
+@media (pointer:coarse){
+  .cdx-button,.cdx-toggle-button,.cdx-select,.cdx-text-input__input,.menu-item{min-height:40px}
+  .cdx-tabs__list__item{min-height:44px}
+  input[type=range]{height:32px}
+  .keys,.cdx-button kbd{display:none}
+  .fs div{padding:10px 12px}
+  .card:hover{border-color:var(--border-color-subtle)}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand"><span class="dot"></span>WLE Filter</div>
+  <select id="runSelect" class="cdx-select" title="Прогін"></select>
+  <button id="newRunBtn" class="cdx-button cdx-button--action-progressive cdx-button--weight-primary" aria-label="Новий прогін">+<span class="lbl-full"> Новий прогін</span><span class="lbl-short"> Прогін</span></button>
+  <div class="run-progress">
+    <div class="cdx-progress-bar cdx-progress-bar--inline" role="progressbar" aria-label="Прогрес аналізу">
+      <div class="cdx-progress-bar__bar cdx-progress-bar__bar--determinate" id="bar"></div>
+    </div>
+    <span id="runMsg" class="muted small"></span>
+  </div>
+  <button id="pauseBtn" class="cdx-button" hidden>⏸ Пауза</button>
+  <button id="resumeBtn" class="cdx-button cdx-button--action-progressive" hidden>▶ Продовжити</button>
+  <div class="menu" id="exportMenu">
+    <button class="cdx-button" id="exportBtn" aria-label="Експорт">⤓<span class="lbl-full"> Експорт ▾</span></button>
+    <div class="menu-list" role="menu">
+      <button class="menu-item" data-export="csv&only=all">CSV — усі фото</button>
+      <button class="menu-item" data-export="csv&only=flagged">CSV — лише відсіяні</button>
+      <button class="menu-item" data-export="csv&only=ok">CSV — лише ті, що пройшли</button>
+      <hr class="sep">
+      <button class="menu-item" data-export="json&only=all">JSON — усі (для інтеграції)</button>
+    </div>
+  </div>
+  <div class="menu" id="runMenu">
+    <button class="cdx-button cdx-button--weight-quiet" title="Дії з прогоном" aria-label="Дії з прогоном">⋯</button>
+    <div class="menu-list" role="menu">
+      <button class="menu-item" id="renameRun">Перейменувати</button>
+      <button class="menu-item" id="retryErrors">Повторити фото з помилками</button>
+      <hr class="sep">
+      <button class="menu-item danger" id="deleteRun">Видалити прогін</button>
+    </div>
+  </div>
+  <button id="themeBtn" class="cdx-button cdx-button--weight-quiet" aria-label="Тема"></button>
+</header>
+
+<div id="app"></div>
+<div id="drawerBackdrop"></div>
+
+<!-- Лайтбокс -->
+<div id="lightbox">
+  <div class="lb-stage">
+    <button id="lbClose" class="cdx-button" title="Закрити (Esc)" aria-label="Закрити">✕</button>
+    <button class="cdx-button lb-nav lb-prev" id="lbPrev" title="Попереднє (←)" aria-label="Попереднє">‹</button>
+    <div class="lb-wrap" id="lbWrap"><img id="lbImg" alt=""></div>
+    <button class="cdx-button lb-nav lb-next" id="lbNext" title="Наступне (→)" aria-label="Наступне">›</button>
+  </div>
+  <div class="lb-side" id="lbSide"></div>
+</div>
+
+<!-- Новий прогін -->
+<dialog id="newRunDlg" class="wle-dialog">
+  <form class="cdx-dialog cdx-dialog--dividers" method="dialog" id="newRunForm">
+    <header class="cdx-dialog__header cdx-dialog__header--default">
+      <div class="cdx-dialog__header__title-group">
+        <h2 class="cdx-dialog__header__title">Новий прогін</h2>
+        <p class="cdx-dialog__header__subtitle">Аналіз запускається один раз; пороги потім змінюються наживо.</p>
+      </div>
+    </header>
+    <div class="cdx-dialog__body">
+      <div class="cdx-field">
+        <div class="cdx-label"><span class="cdx-label__label"><span class="cdx-label__label__text">Номінація</span></span>
+          <span class="cdx-label__description">Визначає стартові пороги чутливості</span></div>
+        <div class="cdx-toggle-button-group" id="nomSeg"></div>
+      </div>
+      <div class="cdx-field">
+        <div class="cdx-label"><span class="cdx-label__label"><span class="cdx-label__label__text">Джерело фото</span></span></div>
+        <div class="cdx-toggle-button-group" id="srcSeg">
+          <button type="button" data-src="commons" class="cdx-toggle-button cdx-toggle-button--framed cdx-toggle-button--toggled-on" aria-pressed="true">Категорія Commons</button>
+          <button type="button" data-src="folder" class="cdx-toggle-button cdx-toggle-button--framed" aria-pressed="false">Локальна папка</button>
+        </div>
+      </div>
+      <div class="cdx-field" id="commonsField">
+        <label class="cdx-label" for="catInput"><span class="cdx-label__label"><span class="cdx-label__label__text">Категорія на Commons</span></span></label>
+        <div class="cdx-text-input"><input class="cdx-text-input__input" type="text" id="catInput" placeholder="Wiki Loves Earth Ukraine 2026 - Quality"></div>
+      </div>
+      <div class="cdx-field" id="folderField" hidden>
+        <label class="cdx-label" for="folderInput"><span class="cdx-label__label"><span class="cdx-label__label__text">Шлях до папки</span></span>
+          <span class="cdx-label__description">На комп'ютері, де запущено сервер. Підпапки першого рівня вважаються авторами.</span></label>
+        <div class="cdx-text-input"><input class="cdx-text-input__input" type="text" id="folderInput" placeholder="/home/user/photos"></div>
+        <div class="fs" id="fsList"></div>
+      </div>
+      <div class="field-row">
+        <div class="cdx-field">
+          <label class="cdx-label" for="nameInput"><span class="cdx-label__label"><span class="cdx-label__label__text">Назва прогону</span>
+            <span class="cdx-label__label__optional-flag"> (необов'язково)</span></span></label>
+          <div class="cdx-text-input"><input class="cdx-text-input__input" type="text" id="nameInput"></div>
+        </div>
+        <div class="cdx-field">
+          <label class="cdx-label" for="limitInput"><span class="cdx-label__label"><span class="cdx-label__label__text">Ліміт фото</span></span></label>
+          <div class="cdx-text-input"><input class="cdx-text-input__input" type="number" id="limitInput" min="1" placeholder="усі"></div>
+        </div>
+      </div>
+      <div class="cdx-message cdx-message--block cdx-message--error" id="newRunErrBox" hidden>
+        <span class="cdx-message__icon"></span><div class="cdx-message__content" id="newRunErr"></div>
+      </div>
+    </div>
+    <footer class="cdx-dialog__footer cdx-dialog__footer--default">
+      <div class="cdx-dialog__footer__actions">
+        <button type="submit" class="cdx-button cdx-button--action-progressive cdx-button--weight-primary" id="createRunBtn">Почати аналіз</button>
+        <button type="button" class="cdx-button" id="cancelNewRun">Скасувати</button>
+      </div>
+    </footer>
+  </form>
+</dialog>
+
+<div id="toast" class="cdx-message cdx-message--block cdx-message--success" role="status">
+  <span class="cdx-message__icon"></span><div class="cdx-message__content" id="toastText"></div>
+</div>
+
+<script>
+"use strict";
+// ═══════════════════════════════════════════════════════════════════════════
+// Стан
+// ═══════════════════════════════════════════════════════════════════════════
+const S = {
+  info: null, presets: {}, runs: [], run: null,
+  t: null,            // поточні пороги (редагуються повзунками)
+  view: "flagged", reason: null, sort: "seq", search: "",
+  items: [], ids: [], matched: 0, summary: null, hist: null,
+  pageSize: 60, focusIdx: -1, lbIndex: -1, showBoxes: true,
+  loading: false, dirtySave: false,
+};
+const REASONS = {blur:"Розмите", person:"Людина", sign:"Табличка/текст", duplicate:"Дублікат", mpx:"Мала роздільність", error:"Помилка"};
+const STATUS = {new:"новий", listing:"отримую список", running:"обробка", paused:"на паузі", done:"готово", failed:"помилка"};
+
+const $ = (s, el=document) => el.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmtPct = v => (v*100).toFixed(v < 0.1 ? 1 : 0) + "%";
+const fmtNum = v => v == null ? "—" : (v >= 100 ? Math.round(v).toLocaleString("uk-UA") : (+v).toFixed(v < 1 ? 2 : 1));
+const fmtInt = n => (n ?? 0).toLocaleString("uk-UA");
+
+// Розмітка компонентів Codex
+const chip = (text, status="error", title="") =>
+  `<span class="cdx-info-chip cdx-info-chip--${status}" ${title ? `title="${esc(title)}"` : ""}><span class="cdx-info-chip__icon"></span><span class="cdx-info-chip__text">${esc(text)}</span></span>`;
+const message = (html, status="notice", inline=false) =>
+  `<div class="cdx-message cdx-message--${inline ? "inline" : "block"} cdx-message--${status}"><span class="cdx-message__icon"></span><div class="cdx-message__content">${html}</div></div>`;
+const toggleBtn = (label, on, attrs="") =>
+  `<button type="button" class="cdx-toggle-button cdx-toggle-button--framed ${on ? "cdx-toggle-button--toggled-on" : ""}" aria-pressed="${on}" ${attrs}>${label}</button>`;
+const decisionBtns = (it, cls="", keys=false) => `
+  <button class="cdx-button ${it.manual === "accept" ? "cdx-button--action-progressive cdx-button--weight-primary" : ""} ${cls}" data-dec="accept" aria-pressed="${it.manual === "accept"}" title="Залишити (A)" aria-label="Залишити">✓<span class="lbl"> Залишити</span>${keys ? " <kbd>A</kbd>" : ""}</button>
+  <button class="cdx-button cdx-button--action-destructive ${it.manual === "reject" ? "cdx-button--weight-primary" : ""} ${cls}" data-dec="reject" aria-pressed="${it.manual === "reject"}" title="Відхилити (R)" aria-label="Відхилити">✗<span class="lbl"> Відхилити</span>${keys ? " <kbd>R</kbd>" : ""}</button>`;
+
+async function api(path, opts={}) {
+  const o = {...opts, headers: {"Content-Type":"application/json", ...(opts.headers||{})}};
+  if (o.body && typeof o.body !== "string") o.body = JSON.stringify(o.body);
+  const r = await fetch(path, o);
+  if (!r.ok) {
+    let msg = r.statusText;
+    try { const j = await r.json(); msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail); } catch {}
+    throw new Error(msg);
+  }
+  return r.status === 204 ? null : r.json();
+}
+function toast(msg, status="success") {
+  const t = $("#toast");
+  t.className = `cdx-message cdx-message--block cdx-message--${status}`;
+  $("#toastText").textContent = msg; void t.offsetWidth; t.classList.add("show");
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 2400);
+}
+function debounce(fn, ms) { let h; return (...a) => { clearTimeout(h); h = setTimeout(() => fn(...a), ms); }; }
+
+// ─── Тема: авто / світла / темна ──────────────────────────────────────────
+const SVG = d => `<svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">${d}</svg>`;
+const THEMES = {
+  auto:  [SVG('<path d="M10 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16zm0 2v12a6 6 0 0 1 0-12z"/>'), "Тема: як у системі"],
+  light: [SVG('<circle cx="10" cy="10" r="4"/><path d="M9 1h2v3H9zM9 16h2v3H9zM1 9h3v2H1zM16 9h3v2h-3zM3.3 4.7l1.4-1.4 2.1 2.1-1.4 1.4zM13.2 14.6l1.4-1.4 2.1 2.1-1.4 1.4zM3.3 15.3l2.1-2.1 1.4 1.4-2.1 2.1zM13.2 5.4l2.1-2.1 1.4 1.4-2.1 2.1z"/>'), "Тема: світла"],
+  dark:  [SVG('<path d="M17 12.5A7.5 7.5 0 0 1 7.5 3a7.5 7.5 0 1 0 9.5 9.5z"/>'), "Тема: темна"]};
+function applyTheme(t) {
+  document.documentElement.dataset.theme = t;
+  try { localStorage.setItem("wle-theme", t); } catch {}
+  $("#themeBtn").innerHTML = THEMES[t][0]; $("#themeBtn").title = THEMES[t][1] + " (клік — змінити)";
+  drawHists();
+}
+$("#themeBtn").onclick = () => {
+  const order = ["auto","light","dark"];
+  applyTheme(order[(order.indexOf(document.documentElement.dataset.theme) + 1) % 3]);
+};
+matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", drawHists);
+const tok = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Ініціалізація
+// ═══════════════════════════════════════════════════════════════════════════
+async function init() {
+  applyTheme(document.documentElement.dataset.theme || "auto");
+  [S.info, S.presets] = await Promise.all([api("/api/info"), api("/api/presets")]);
+  await loadRuns();
+  const fromHash = +location.hash.replace("#run=", "");
+  const id = S.runs.find(r => r.id === fromHash)?.id ?? S.runs[0]?.id;
+  if (id) await selectRun(id); else renderWelcome();
+  setInterval(poll, 2500);
+}
+
+async function loadRuns() {
+  S.runs = await api("/api/runs");
+  const sel = $("#runSelect");
+  sel.innerHTML = S.runs.length ? S.runs.map(r =>
+    `<option value="${r.id}">#${r.id} · ${esc(r.name)} — ${STATUS[r.status] || r.status}</option>`).join("")
+    : `<option>— немає прогонів —</option>`;
+  sel.disabled = !S.runs.length;
+  if (S.run) sel.value = S.run.id;
+}
+
+async function selectRun(id) {
+  S.run = await api(`/api/runs/${id}`);
+  S.t = {...S.run.thresholds};
+  S.view = "flagged"; S.reason = null; S.search = "";
+  location.hash = "run=" + id;
+  $("#runSelect").value = id;
+  renderLayout();
+  renderRunHeader();
+  await refresh();
+}
+
+function renderWelcome() {
+  S.run = null; renderRunHeader();
+  $("#app").innerHTML = `<div class="welcome">
+    <h1>Перевірка фото Wiki Loves Earth</h1>
+    <p class="muted">Створіть прогін: оберіть номінацію та джерело фото — категорію Commons або локальну папку.
+    Аналіз запускається один раз, а пороги чутливості потім можна змінювати наживо.</p>
+    <p><button class="cdx-button cdx-button--action-progressive cdx-button--weight-primary" onclick="openNewRun()">+ Створити перший прогін</button></p></div>`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Шапка / прогрес
+// ═══════════════════════════════════════════════════════════════════════════
+function renderRunHeader() {
+  const r = S.run;
+  const has = !!r;
+  ["#exportMenu", "#runMenu"].forEach(s => $(s).style.display = has ? "" : "none");
+  $(".run-progress").style.visibility = has ? "visible" : "hidden";
+  if (!has) { $("#pauseBtn").hidden = $("#resumeBtn").hidden = true; return; }
+  const pct = r.total ? Math.round(r.processed / r.total * 100) : 0;
+  $("#bar").style.setProperty("--cdx-progress-value", r.status === "done" ? 100 : pct);
+  const busy = r.active || r.status === "running" || r.status === "listing";
+  let msg = `${fmtInt(r.processed)} / ${fmtInt(r.total)} оброблено · ${STATUS[r.status] || r.status}`;
+  if (r.message) msg += ` · ${r.message}`;
+  $("#runMsg").textContent = msg;
+  $("#runMsg").title = msg;
+  $("#runMsg").style.color = r.status === "failed" ? "var(--color-error)" : "";
+  $("#pauseBtn").hidden = !busy;
+  $("#resumeBtn").hidden = busy || (r.status === "done" && r.processed >= r.total);
+}
+
+let lastProcessed = -1;
+async function poll() {
+  if (!S.run) return;
+  const was = S.run;
+  if (!(was.active || ["running","listing"].includes(was.status))) return;
+  try {
+    S.run = await api(`/api/runs/${was.id}`);
+    renderRunHeader();
+    if (S.run.processed !== lastProcessed) {
+      lastProcessed = S.run.processed;
+      // Не перебудовуємо сітку під час ручної перевірки — лише лічильники
+      if ($("#lightbox").classList.contains("open") || window.scrollY > 300) await refresh({summaryOnly:true});
+      else await refresh({keepCount:true});
+    }
+    if (!(S.run.active || ["running","listing"].includes(S.run.status))) { loadRuns(); refresh({keepCount:true}); }
+  } catch {}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Основний макет
+// ═══════════════════════════════════════════════════════════════════════════
+function renderLayout() {
+  $("#app").innerHTML = `<div class="layout">
+    <aside id="aside"></aside>
+    <section class="main">
+      <div class="stats" id="stats"></div>
+      <div class="cdx-tabs"><div class="cdx-tabs__header"><div class="cdx-tabs__list" role="tablist" id="tabs"></div></div></div>
+      <div class="toolbar">
+        <button class="cdx-button" id="drawerBtn" aria-controls="aside">⚙ Чутливість</button>
+        <div class="chips" id="chips"></div>
+        <div class="spacer"></div>
+        <div class="cdx-text-input" id="searchWrap"><input class="cdx-text-input__input" type="search" id="search" placeholder="Пошук: назва чи автор"></div>
+        <select id="sort" class="cdx-select compact" title="Сортування">
+          <option value="seq">За часом завантаження</option>
+          <option value="blur">Найрозмитіші спершу</option>
+          <option value="person">Найбільша людина</option>
+          <option value="sign">Найбільше тексту</option>
+          <option value="title">За назвою</option>
+        </select>
+        <select id="cardSize" class="cdx-select compact" title="Розмір карток">
+          <option value="200">Дрібні</option><option value="260" selected>Середні</option><option value="360">Великі</option>
+        </select>
+        <div class="menu" id="bulkMenu">
+          <button class="cdx-button">Масово ▾</button>
+          <div class="menu-list" role="menu">
+            <button class="menu-item" data-bulk="accept">✓ Залишити всі знайдені (за фільтром)</button>
+            <button class="menu-item danger" data-bulk="reject">✗ Відхилити всі знайдені (за фільтром)</button>
+            <hr class="sep"><button class="menu-item" data-bulk="">↺ Скинути ручні рішення (за фільтром)</button>
+          </div>
+        </div>
+      </div>
+      <div class="grid" id="grid"></div>
+      <div class="more" id="more"></div>
+    </section></div>`;
+  renderAside();
+  $("#search").value = S.search;
+  $("#sort").value = S.sort;
+  $("#search").addEventListener("input", debounce(e => { S.search = e.target.value; refresh(); }, 300));
+  $("#sort").addEventListener("change", e => { S.sort = e.target.value; refresh(); });
+  $("#cardSize").addEventListener("change", e => $("#grid").style.setProperty("--card", e.target.value + "px"));
+  $("#drawerBtn").addEventListener("click", () => toggleDrawer(true));
+  bindMenu($("#bulkMenu"));
+  $("#bulkMenu").addEventListener("click", e => { const b = e.target.closest("[data-bulk]"); if (b) bulk(b.dataset.bulk || null); });
+}
+
+// ─── Панель чутливості ─────────────────────────────────────────────────────
+const FILTERS = [
+  {key:"blur", title:"Розмитість", hint:"Дисперсія Лапласіана. Фото з оцінкою НИЖЧЕ порогу — розмиті.",
+   params:[{k:"blur_threshold", label:"Поріг різкості", min:1, max:3000, step:1, log:true}]},
+  {key:"person", title:"Людина в кадрі", hint:"YOLOv8: рамка людини з упевненістю ≥ порогу, що займає ≥ вказаної частки кадру.",
+   params:[{k:"person_confidence", label:"Упевненість детектора", min:0.05, max:0.95, step:0.01},
+           {k:"person_area", label:"Мін. площа людини, %", min:0, max:0.6, step:0.005, pct:true}]},
+  {key:"sign", title:"Табличка / текст", hint:"Частка кадру, вкрита текстоподібними блоками. Чутливе до дрібних текстур (гілки, трава) і сильного розмиття.",
+   params:[{k:"sign_coverage", label:"Мін. покриття текстом, %", min:0.01, max:0.6, step:0.005, pct:true}]},
+  {key:"duplicate", title:"Дублікати", hint:"Відстань Геммінга між перцептивними хешами (0 — ідентичні). Більше значення — більше збігів.",
+   params:[{k:"duplicate_distance", label:"Макс. відстань", min:0, max:30, step:1}]},
+  {key:"min_mpx", title:"Мін. роздільність", hint:"Роздільність оригіналу в мегапікселях.",
+   params:[{k:"min_mpx", label:"Мін. мегапікселів", min:0.1, max:24, step:0.1}]},
+];
+const enabledKey = f => f.key === "min_mpx" ? "min_mpx_enabled" : f.key + "_enabled";
+const reasonCode = f => f.key === "min_mpx" ? "mpx" : f.key;
+
+function renderAside() {
+  const presetOpts = Object.entries(S.presets).map(([k, p]) =>
+    `<option value="${k}" ${k === S.run.nomination ? "selected" : ""}>${esc(p.label)}</option>`).join("");
+  const p = S.presets[S.run.nomination];
+  $("#aside").innerHTML = `
+    <div class="drawer-head"><h2 class="section-title">Чутливість</h2>
+      <button class="cdx-button cdx-button--weight-quiet" id="drawerClose" aria-label="Закрити панель">✕</button></div>
+    <h2 class="section-title">Чутливість</h2>
+    <div class="preset-row">
+      <select id="presetSel" class="cdx-select" title="Пресет номінації">${presetOpts}</select>
+      <button class="cdx-button" id="applyPreset" title="Застосувати пороги пресету">Застосувати</button>
+    </div>
+    <p class="preset-desc muted small" id="presetDesc">${esc(p?.description || "")}</p>
+    ${FILTERS.map(f => `
+      <div class="filter" id="f-${f.key}">
+        <div class="fhead">
+          <span class="cdx-toggle-switch">
+            <input id="sw-${f.key}" class="cdx-toggle-switch__input" type="checkbox" role="switch" data-en="${enabledKey(f)}">
+            <span class="cdx-toggle-switch__switch"><span class="cdx-toggle-switch__switch__grip"></span></span>
+            <label for="sw-${f.key}" class="cdx-toggle-switch__label cdx-label"><span class="cdx-label__label"><span class="cdx-label__label__text">${f.title}</span></span></label>
+          </span>
+          <span class="count" id="cnt-${reasonCode(f)}" title="Скільки фото відсіює цей фільтр">0</span>
+        </div>
+        <div class="fbody">
+          ${["blur","person","sign"].includes(f.key) ? `<canvas class="hist" id="h-${f.key}" width="600" height="92" title="Клік — встановити поріг"></canvas>` : ""}
+          ${f.params.map(pr => `
+            <div class="param">
+              <span class="plabel"><span>${pr.label}</span><b id="v-${pr.k}"></b></span>
+              <input type="range" data-k="${pr.k}" min="0" max="1000" step="1" aria-label="${pr.label}">
+              <div class="cdx-text-input"><input class="cdx-text-input__input" type="number" data-num="${pr.k}" aria-label="${pr.label}"
+                step="${pr.pct ? 0.5 : pr.step}" min="${pr.pct ? pr.min*100 : pr.min}" max="${pr.pct ? pr.max*100 : pr.max}"></div>
+            </div>`).join("")}
+          ${f.key === "duplicate" ? `<div class="row2">
+              <select class="cdx-select" data-sel="hash_type" title="Тип хешу"><option value="dhash">dHash (швидкий)</option><option value="phash">pHash (стійкіший)</option></select>
+              <select class="cdx-select" data-sel="duplicate_scope" title="Серед яких фото шукати"><option value="all">Серед усіх фото</option><option value="author">У межах автора</option></select>
+            </div>` : ""}
+          <p class="hint">${f.hint}</p>
+        </div>
+      </div>`).join("")}
+    <div class="aside-actions">
+      <button class="cdx-button full" id="savePreset" title="Записати поточні пороги як стандарт для цієї номінації">Зберегти в пресет</button>
+      <button class="cdx-button cdx-button--weight-quiet" id="resetPreset" title="Повернути заводські значення пресету" aria-label="Скинути пресет">↺</button>
+    </div>
+    <div class="save-state" id="saveState"></div>
+    <p class="hint">Пороги зберігаються для цього прогону автоматично. Аналіз фото не повторюється — змінюється лише вердикт.</p>`;
+
+  // Прив'язка
+  const aside = $("#aside");
+  $("#drawerClose").addEventListener("click", () => toggleDrawer(false));
+  aside.querySelectorAll("[data-en]").forEach(el => el.addEventListener("change", () => setT(el.dataset.en, el.checked)));
+  aside.querySelectorAll("[data-k]").forEach(el => el.addEventListener("input", () => {
+    const pr = paramDef(el.dataset.k); setT(pr.k, fromSlider(pr, +el.value));
+  }));
+  aside.querySelectorAll("[data-num]").forEach(el => el.addEventListener("change", () => {
+    const pr = paramDef(el.dataset.num); let v = +el.value; if (pr.pct) v /= 100;
+    setT(pr.k, Math.min(pr.max, Math.max(pr.min, v)));
+  }));
+  aside.querySelectorAll("[data-sel]").forEach(el => el.addEventListener("change", () => setT(el.dataset.sel, el.value)));
+  ["blur","person","sign"].forEach(k => { const c = $("#h-" + k); if (c) c.addEventListener("click", e => histClick(k, e)); });
+  $("#presetSel").addEventListener("change", e => { $("#presetDesc").textContent = S.presets[e.target.value]?.description || ""; });
+  $("#applyPreset").addEventListener("click", () => {
+    const k = $("#presetSel").value; S.t = {...S.presets[k].thresholds}; syncAside(); onThresholdsChanged();
+    toast(`Застосовано пресет «${S.presets[k].label}»`);
+  });
+  $("#savePreset").addEventListener("click", async () => {
+    const k = $("#presetSel").value;
+    if (!confirm(`Записати поточні пороги як стандарт для «${S.presets[k].label}»? Нові прогони цієї номінації стартуватимуть з них.`)) return;
+    S.presets = await api(`/api/presets/${k}`, {method:"PUT", body:{thresholds:S.t}});
+    toast("Пресет збережено");
+  });
+  $("#resetPreset").addEventListener("click", async () => {
+    const k = $("#presetSel").value;
+    if (!confirm(`Повернути заводські значення пресету «${S.presets[k].label}»?`)) return;
+    S.presets = await api(`/api/presets/${k}/reset`, {method:"POST"});
+    toast("Пресет скинуто до заводських значень");
+  });
+  syncAside();
+}
+
+function toggleDrawer(open) {
+  $("#aside")?.classList.toggle("open", open);
+  $("#drawerBackdrop").classList.toggle("open", open);
+  document.body.style.overflow = open ? "hidden" : "";
+}
+$("#drawerBackdrop").addEventListener("click", () => toggleDrawer(false));
+
+function paramDef(k) { for (const f of FILTERS) for (const p of f.params) if (p.k === k) return p; }
+function toSlider(p, v) {
+  if (p.log) return Math.round(Math.log(v / p.min) / Math.log(p.max / p.min) * 1000);
+  return Math.round((v - p.min) / (p.max - p.min) * 1000);
+}
+function fromSlider(p, s) {
+  let v = p.log ? p.min * Math.pow(p.max / p.min, s / 1000) : p.min + (p.max - p.min) * s / 1000;
+  v = Math.round(v / p.step) * p.step;
+  return +v.toFixed(4);
+}
+function fmtParam(p, v) { return p.pct ? fmtPct(v) : (p.k === "duplicate_distance" ? String(v) : fmtNum(v)); }
+
+function syncAside() {
+  const aside = $("#aside"); if (!aside) return;
+  FILTERS.forEach(f => {
+    const on = !!S.t[enabledKey(f)];
+    $(`[data-en="${enabledKey(f)}"]`).checked = on;
+    $("#f-" + f.key).classList.toggle("off", !on);
+    f.params.forEach(p => {
+      const v = S.t[p.k];
+      $(`[data-k="${p.k}"]`).value = toSlider(p, v);
+      const num = $(`[data-num="${p.k}"]`);
+      if (document.activeElement !== num) num.value = p.pct ? +(v * 100).toFixed(2) : v;
+      $("#v-" + p.k).textContent = fmtParam(p, v);
+    });
+  });
+  aside.querySelectorAll("[data-sel]").forEach(el => el.value = S.t[el.dataset.sel]);
+  drawHists();
+}
+
+function setT(k, v) { S.t[k] = v; syncAside(); onThresholdsChanged(); }
+const refreshDebounced = debounce(() => refresh(), 220);
+const saveDebounced = debounce(saveThresholds, 900);
+function onThresholdsChanged() {
+  $("#saveState").textContent = "незбережено…"; S.dirtySave = true;
+  refreshDebounced(); saveDebounced();
+}
+async function saveThresholds() {
+  if (!S.run || !S.dirtySave) return;
+  S.dirtySave = false;
+  try { await api(`/api/runs/${S.run.id}/thresholds`, {method:"PUT", body:S.t}); $("#saveState").textContent = "✓ збережено для прогону"; }
+  catch (e) { $("#saveState").textContent = "помилка збереження: " + e.message; }
+}
+
+// ─── Гістограми (кольори — з токенів Codex, тож працює і в темній темі) ────
+function histParams(k) {
+  if (k === "blur") return {thr: S.t.blur_threshold, flagLeft: true, toX: v => Math.log10(Math.max(v,1))};
+  if (k === "person") return {thr: S.t.person_area, flagLeft: false, toX: v => v};
+  return {thr: S.t.sign_coverage, flagLeft: false, toX: v => v};
+}
+function drawHists() {
+  if (!S.hist || !S.t) return;
+  const cBad = tok("--background-color-error") || "#f54739";
+  const cOk = tok("--border-color-progressive") || "#36c";
+  const cLine = tok("--color-base") || "#202122";
+  ["blur","person","sign"].forEach(k => {
+    const c = $("#h-" + k); const h = S.hist[k]; if (!c || !h) return;
+    const ctx = c.getContext("2d"); const W = c.width, H = c.height;
+    ctx.clearRect(0, 0, W, H);
+    const {thr, flagLeft, toX} = histParams(k);
+    const max = Math.max(1, ...h.counts);
+    const n = h.counts.length, bw = W / n;
+    const tx = (toX(thr) - h.lo) / ((h.hi - h.lo) || 1) * W;
+    h.counts.forEach((cnt, i) => {
+      const x = i * bw, bh = cnt ? Math.max(3, Math.sqrt(cnt / max) * (H - 8)) : 0;
+      const mid = x + bw / 2;
+      const flagged = flagLeft ? mid < tx : mid >= tx;
+      ctx.globalAlpha = flagged ? 1 : .55;
+      ctx.fillStyle = flagged ? cBad : cOk;
+      ctx.fillRect(x + 1, H - bh, bw - 2, bh);
+    });
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = cLine; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(tx, 0); ctx.lineTo(tx, H); ctx.stroke();
+    c.title = k === "person" ? `Клік — встановити поріг. Без людей: ${S.hist.person_zero} фото` : "Клік — встановити поріг";
+  });
+}
+function histClick(k, e) {
+  const h = S.hist?.[k]; if (!h) return;
+  const r = e.target.getBoundingClientRect();
+  const x = h.lo + (e.clientX - r.left) / r.width * (h.hi - h.lo);
+  if (k === "blur") setT("blur_threshold", Math.round(Math.pow(10, x)));
+  else if (k === "person") setT("person_area", +Math.max(0, x).toFixed(3));
+  else setT("sign_coverage", +Math.max(0.01, x).toFixed(3));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Результати
+// ═══════════════════════════════════════════════════════════════════════════
+let reqSeq = 0;
+async function refresh({keepCount=false, summaryOnly=false, append=false} = {}) {
+  if (!S.run) return;
+  const my = ++reqSeq;
+  const limit = summaryOnly ? 1 : append ? S.pageSize : Math.max(S.pageSize, keepCount ? S.items.length : 0);
+  const offset = append ? S.items.length : 0;
+  const res = await api(`/api/runs/${S.run.id}/results`, {method:"POST", body:{
+    thresholds:S.t, view:S.view, reason:S.reason, sort:S.sort, search:S.search, offset, limit}});
+  if (my !== reqSeq) return;           // застаріла відповідь
+  S.summary = res.summary; S.hist = res.histograms;
+  S.run = res.run;
+  renderStats(); renderTabs(); renderChips(); drawHists(); renderRunHeader();
+  if (summaryOnly) return;
+  S.ids = res.ids; S.matched = res.matched;
+  S.items = append ? S.items.concat(res.items) : res.items;
+  renderGrid(append ? res.items : null);
+}
+
+function renderStats() {
+  const s = S.summary;
+  $("#stats").innerHTML = `
+    <div class="stat"><b>${fmtInt(s.total)}</b><span class="muted small">усього</span></div>
+    <div class="stat ok"><b>${fmtInt(s.ok)}</b><span class="muted small">пройшли</span></div>
+    <div class="stat bad"><b>${fmtInt(s.flagged)}</b><span class="muted small">відсіяно</span></div>
+    <div class="stat man"><b>${fmtInt(s.manual)}</b><span class="muted small">перевірено вручну${s.overridden ? ` · ${s.overridden} змінено` : ""}</span></div>
+    ${s.error ? `<div class="stat err"><b>${fmtInt(s.error)}</b><span class="muted small">помилки</span></div>` : ""}
+    ${s.pending ? `<div class="stat"><b>${fmtInt(s.pending)}</b><span class="muted small">в черзі</span></div>` : ""}`;
+  Object.entries(s.reasons).forEach(([k, n]) => { const b = $("#cnt-" + k); if (b) b.textContent = n; });
+}
+
+function renderTabs() {
+  const s = S.summary;
+  const tabs = [["flagged","Відсіяні",s.flagged],["ok","Пройшли",s.ok],["manual","Перевірені вручну",s.manual],
+                ["error","Помилки",s.error],["all","Усі",s.total]];
+  if (s.pending) tabs.splice(4, 0, ["pending","В черзі",s.pending]);
+  $("#tabs").innerHTML = tabs.map(([k, l, n]) =>
+    `<button class="cdx-tabs__list__item" role="tab" aria-selected="${S.view === k}" data-view="${k}">${l}<span class="n">${fmtInt(n)}</span></button>`).join("");
+  $("#tabs").onclick = e => { const b = e.target.closest("[data-view]"); if (!b) return;
+    S.view = b.dataset.view; if (!["flagged","all","manual"].includes(S.view)) S.reason = null; refresh(); };
+}
+
+function renderChips() {
+  const el = $("#chips");
+  if (!["flagged","all","manual"].includes(S.view)) { el.innerHTML = ""; return; }
+  const r = S.summary.reasons;
+  el.innerHTML = toggleBtn("Усі причини", !S.reason, 'data-r=""') +
+    Object.entries(r).filter(([, n]) => n).map(([k, n]) => toggleBtn(`${REASONS[k]} · ${n}`, S.reason === k, `data-r="${k}"`)).join("");
+  el.onclick = e => { const b = e.target.closest("[data-r]"); if (!b) return; S.reason = b.dataset.r || null; refresh(); };
+}
+
+function reasonLabel(r) {
+  switch (r.code) {
+    case "blur": return `Розмите (${fmtNum(r.value)})`;
+    case "person": return `Людина ${fmtPct(r.value)}`;
+    case "sign": return `Текст ${fmtPct(r.value)}`;
+    case "duplicate": return `Дублікат (d=${r.value})`;
+    case "mpx": return `${r.value} Мп`;
+    case "error": return "Помилка";
+  }
+  return r.code;
+}
+
+function cardHTML(it) {
+  const tags = it.reasons.map(r => chip(reasonLabel(r), r.code === "error" ? "warning" : "error",
+                                         r.code === "error" ? it.error : "")).join("");
+  const hit = c => it.reasons.some(r => r.code === c) ? "hit" : "";
+  const mb = it.manual ? `<span class="mbadge">${chip(it.manual === "accept" ? "Залишено" : "Відхилено", it.manual === "accept" ? "success" : "error")}</span>` : "";
+  const metrics = it.status === "done" ? `
+      <span class="${hit("blur")}" title="Різкість">◎ ${fmtNum(it.blur)}</span>
+      <span class="${hit("person")}" title="Найбільша людина">👤 ${fmtPct(it.person_area)}</span>
+      <span class="${hit("sign")}" title="Покриття текстом">▤ ${fmtPct(it.sign || 0)}</span>
+      ${it.width ? `<span class="${hit("mpx")}" title="Роздільність оригіналу">${(it.width*it.height/1e6).toFixed(1)} Мп</span>` : ""}`
+    : `<span>${it.status === "error" ? esc(it.error || "помилка") : "очікує аналізу"}</span>`;
+  return `<div class="card" data-id="${it.id}">
+    <div class="thumb" data-open="${it.id}">
+      <img loading="lazy" src="${it.thumb}" alt="${esc(it.title)}">
+      <div class="tags">${tags}</div>${mb}
+    </div>
+    <div class="cbody">
+      <div class="ctitle" title="${esc(it.title)}">${esc(it.title.replace(/^File:/, ""))}</div>
+      <div class="metrics">${it.author ? `<span>✎ ${esc(it.author)}</span>` : ""}</div>
+      <div class="metrics">${metrics}</div>
+      <div class="cactions">${decisionBtns(it)}</div>
+    </div></div>`;
+}
+
+function renderGrid(appended) {
+  const g = $("#grid");
+  if (!appended) {
+    if (!S.items.length) {
+      const msg = S.summary.total === 0 ? "Фото ще не отримано — зачекайте, йде аналіз…" :
+        S.summary.pending ? `Поки нічого — аналіз триває, в черзі ${fmtInt(S.summary.pending)} фото…` :
+        S.view === "flagged" ? "Немає відсіяних фото з такими порогами." : "Нічого не знайдено.";
+      g.innerHTML = `<div class="empty">${message(esc(msg), S.view === "flagged" && !S.summary.pending && S.summary.total ? "success" : "notice")}</div>`;
+    } else g.innerHTML = S.items.map(cardHTML).join("");
+  } else g.insertAdjacentHTML("beforeend", appended.map(cardHTML).join(""));
+  const left = S.matched - S.items.length;
+  $("#more").innerHTML = left > 0 ? `<button class="cdx-button" id="moreBtn">Показати ще (${fmtInt(left)})</button>` : "";
+  if (left > 0) { $("#moreBtn").onclick = () => refresh({append:true}); observeMore(); }
+  g.onclick = onGridClick;
+  if (S.focusIdx >= S.items.length) S.focusIdx = -1;
+  markFocus();
+}
+
+let moreObs;
+function observeMore() {
+  moreObs?.disconnect();
+  moreObs = new IntersectionObserver(es => { if (es[0].isIntersecting && !S.loading) { S.loading = true; refresh({append:true}).finally(() => S.loading = false); } }, {rootMargin:"600px"});
+  moreObs.observe($("#more"));
+}
+
+function onGridClick(e) {
+  const card = e.target.closest(".card"); if (!card) return;
+  const id = +card.dataset.id;
+  const dec = e.target.closest("[data-dec]");
+  if (dec) { const it = S.items.find(i => i.id === id); decide(id, it.manual === dec.dataset.dec ? null : dec.dataset.dec); return; }
+  if (e.target.closest("[data-open]")) openLightbox(S.items.findIndex(i => i.id === id));
+}
+
+function updateCard(it) {
+  const old = $(`.card[data-id="${it.id}"]`); if (!old) return;
+  const tmp = document.createElement("div"); tmp.innerHTML = cardHTML(it);
+  const nc = tmp.firstElementChild;
+  // У вкладках «Відсіяні»/«Пройшли» картка, що змінила вердикт, напівпрозора до оновлення
+  if ((S.view === "flagged" && it.verdict !== "flagged") || (S.view === "ok" && it.verdict !== "ok")) nc.classList.add("dim");
+  old.replaceWith(nc); markFocus();
+}
+
+async function decide(id, decision) {
+  try {
+    const r = await api(`/api/images/${id}/decision`, {method:"POST", body:{decision}});
+    const it = S.items.find(i => i.id === id);
+    if (it) {
+      it.manual = r.manual;
+      it.verdict = r.manual === "accept" ? "ok" : r.manual === "reject" ? "flagged" : it.auto_verdict;
+      updateCard(it);
+      if (S.lbIndex >= 0 && S.items[S.lbIndex]?.id === id) renderLbSide();
+    }
+    refresh({summaryOnly:true});
+  } catch (e) { toast("Помилка: " + e.message, "error"); }
+}
+
+async function bulk(decision) {
+  const n = S.ids.length; if (!n) return;
+  const what = decision === "accept" ? "ЗАЛИШИТИ" : decision === "reject" ? "ВІДХИЛИТИ" : "СКИНУТИ ручні рішення для";
+  if (!confirm(`${what} ${n} фото за поточним фільтром?`)) return;
+  await api(`/api/runs/${S.run.id}/decisions`, {method:"POST", body:{ids:S.ids, decision}});
+  toast(`Оновлено: ${n}`); refresh();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Лайтбокс
+// ═══════════════════════════════════════════════════════════════════════════
+async function openLightbox(idx) {
+  if (idx < 0) return;
+  if (idx >= S.items.length && S.items.length < S.matched) await refresh({append:true});
+  if (idx >= S.items.length) return;
+  S.lbIndex = idx; S.focusIdx = idx; markFocus();
+  $("#lightbox").classList.add("open");
+  document.body.style.overflow = "hidden";
+  const it = S.items[idx];
+  const img = $("#lbImg");
+  img.onload = drawBoxes;
+  img.src = it.thumb;
+  renderLbSide(); drawBoxes();
+}
+function closeLightbox() {
+  $("#lightbox").classList.remove("open"); document.body.style.overflow = ""; S.lbIndex = -1;
+  $(`.card[data-id="${S.items[S.focusIdx]?.id}"]`)?.scrollIntoView({block:"nearest"});
+}
+function drawBoxes() {
+  const wrap = $("#lbWrap"); wrap.querySelectorAll(".pbox").forEach(b => b.remove());
+  const it = S.items[S.lbIndex]; if (!it || !S.showBoxes) return;
+  (it.persons || []).forEach(p => {
+    if (p.conf < S.t.person_confidence) return;
+    const [x1, y1, x2, y2] = p.box;
+    const d = document.createElement("div");
+    d.className = "pbox" + (p.area >= S.t.person_area ? " hit" : "");
+    Object.assign(d.style, {left: x1*100+"%", top: y1*100+"%", width: (x2-x1)*100+"%", height: (y2-y1)*100+"%"});
+    d.innerHTML = `<span>${Math.round(p.conf*100)}% · ${fmtPct(p.area)}</span>`;
+    wrap.appendChild(d);
+  });
+}
+function renderLbSide() {
+  const it = S.items[S.lbIndex]; if (!it) return;
+  const dup = it.reasons.find(r => r.code === "duplicate");
+  const nPersons = (it.persons || []).filter(p => p.conf >= S.t.person_confidence).length;
+  const reasons = it.reasons.length
+    ? it.reasons.map(r => message(esc(r.code === "error" ? (it.error || "Помилка") : reasonLabel(r)), r.code === "error" ? "warning" : "error")).join("")
+    : message("Автоматичні фільтри не спрацювали", "success");
+  $("#lbSide").innerHTML = `
+    <div class="muted small">${S.lbIndex + 1} з ${fmtInt(S.matched)}</div>
+    <h3>${esc(it.title.replace(/^File:/, ""))}</h3>
+    ${reasons}
+    ${dup ? `<div class="dup-orig" data-dup="${dup.of}" title="Відкрити схоже фото">
+        <img src="/api/images/${dup.of}/thumb" alt=""><div class="small"><b>Схоже на:</b><br>${esc((dup.of_title||"").replace(/^File:/, ""))}</div></div>` : ""}
+    <div class="lb-actions lb-full">${decisionBtns(it, "", true)}</div>
+    <div class="cdx-text-input"><textarea id="noteInput" placeholder="Нотатка (необов'язково)" aria-label="Нотатка">${esc(it.note || "")}</textarea></div>
+    <dl class="kv">
+      <dt>Автор</dt><dd>${esc(it.author || "—")}</dd>
+      <dt>Різкість</dt><dd>${fmtNum(it.blur)} <span class="muted">(поріг ${fmtNum(S.t.blur_threshold)})</span></dd>
+      <dt>Людей</dt><dd>${nPersons}, найбільша ${fmtPct(it.person_area)}</dd>
+      <dt>Текст</dt><dd>${fmtPct(it.sign || 0)}</dd>
+      <dt>Розмір</dt><dd>${it.width ? `${it.width}×${it.height} (${(it.width*it.height/1e6).toFixed(1)} Мп)` : "—"}</dd>
+      <dt>Автовердикт</dt><dd>${{ok:"пройшло", flagged:"відсіяно", error:"помилка", pending:"в черзі"}[it.auto_verdict]}</dd>
+      ${it.page_id ? `<dt>pageId</dt><dd>${it.page_id}</dd>` : ""}
+    </dl>
+    <div>${it.page_url ? `<a href="${esc(it.page_url)}" target="_blank" rel="noopener">Відкрити на Commons ↗</a>` : `<a href="/api/images/${it.id}/original" target="_blank">Оригінал ↗</a>`}</div>
+    <div class="keys"><kbd>←</kbd> <kbd>→</kbd> навігація · <kbd>A</kbd> залишити · <kbd>R</kbd> відхилити · <kbd>U</kbd> скинути ·
+      <kbd>B</kbd> рамки людей · <kbd>Esc</kbd> закрити</div>`;
+  $("#lbSide").querySelectorAll("[data-dec]").forEach(b => b.onclick = () =>
+    decide(it.id, it.manual === b.dataset.dec ? null : b.dataset.dec));
+  const dupEl = $("#lbSide [data-dup]");
+  if (dupEl) dupEl.onclick = () => window.open(`/api/images/${dupEl.dataset.dup}/thumb`, "_blank");
+  $("#noteInput").addEventListener("change", async e => {
+    await api(`/api/images/${it.id}/decision`, {method:"POST", body:{decision: it.manual, note: e.target.value}});
+    it.note = e.target.value; toast("Нотатку збережено");
+  });
+}
+$("#lbClose").onclick = closeLightbox;
+// Свайп вліво/вправо — наступне/попереднє фото; вниз — закрити
+(() => {
+  let x0 = null, y0 = null, t0 = 0;
+  const stage = $(".lb-stage");
+  stage.addEventListener("touchstart", e => { if (e.touches.length !== 1) { x0 = null; return; }
+    x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; t0 = Date.now(); }, {passive:true});
+  stage.addEventListener("touchend", e => {
+    if (x0 === null) return;
+    const dx = e.changedTouches[0].clientX - x0, dy = e.changedTouches[0].clientY - y0;
+    x0 = null;
+    if (Date.now() - t0 > 800) return;
+    if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+      if (dx < 0) openLightbox(S.lbIndex + 1); else if (S.lbIndex > 0) openLightbox(S.lbIndex - 1);
+    } else if (dy > 90 && Math.abs(dy) > Math.abs(dx) * 1.5) closeLightbox();
+  }, {passive:true});
+})();
+$("#lbPrev").onclick = () => S.lbIndex > 0 && openLightbox(S.lbIndex - 1);
+$("#lbNext").onclick = () => openLightbox(S.lbIndex + 1);
+
+function markFocus() {
+  document.querySelectorAll(".card.focus").forEach(c => c.classList.remove("focus"));
+  const it = S.items[S.focusIdx]; if (it) $(`.card[data-id="${it.id}"]`)?.classList.add("focus");
+}
+
+// ─── Клавіатура ────────────────────────────────────────────────────────────
+document.addEventListener("keydown", e => {
+  if (e.target.matches("input,textarea,select") || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (document.querySelector("dialog[open]")) return;
+  if (e.key === "Escape" && $("#aside")?.classList.contains("open")) { toggleDrawer(false); return; }
+  const lb = S.lbIndex >= 0;
+  const idx = lb ? S.lbIndex : S.focusIdx;
+  const it = S.items[idx];
+  const k = e.key.toLowerCase();
+  const advance = () => { if (lb) setTimeout(() => openLightbox(idx + 1), 150); else { S.focusIdx = Math.min(idx + 1, S.items.length - 1); markFocus(); scrollFocus(); } };
+  if (k === "escape" && lb) closeLightbox();
+  else if (k === "arrowright" || k === "j") { if (lb) openLightbox(idx + 1); else { S.focusIdx = Math.min(idx + 1, S.items.length - 1); markFocus(); scrollFocus(); } }
+  else if (k === "arrowleft" || k === "k") { if (lb) idx > 0 && openLightbox(idx - 1); else { S.focusIdx = Math.max(idx - 1, 0); markFocus(); scrollFocus(); } }
+  else if (k === "enter" && !lb && it) openLightbox(idx);
+  else if ((k === "a" || k === "ф") && it) { decide(it.id, "accept"); advance(); }
+  else if ((k === "r" || k === "к") && it) { decide(it.id, "reject"); advance(); }
+  else if ((k === "u" || k === "г") && it) decide(it.id, null);
+  else if ((k === "b" || k === "и") && lb) { S.showBoxes = !S.showBoxes; drawBoxes(); }
+  else return;
+  e.preventDefault();
+});
+function scrollFocus() { $(`.card[data-id="${S.items[S.focusIdx]?.id}"]`)?.scrollIntoView({block:"nearest", behavior:"smooth"}); }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Новий прогін
+// ═══════════════════════════════════════════════════════════════════════════
+let newSrc = "commons", newNom = "quality";
+function setPressed(group, attr, val) {
+  group.querySelectorAll("button").forEach(b => {
+    const on = b.dataset[attr] === val;
+    b.classList.toggle("cdx-toggle-button--toggled-on", on); b.setAttribute("aria-pressed", on);
+  });
+}
+function showNewRunErr(msg) { $("#newRunErr").textContent = msg; $("#newRunErrBox").hidden = !msg; }
+function openNewRun() {
+  $("#nomSeg").innerHTML = Object.entries(S.presets).map(([k, p]) => toggleBtn(esc(p.label), k === newNom, `data-nom="${k}"`)).join("");
+  showNewRunErr("");
+  setNom(newNom);
+  $("#newRunDlg").showModal();
+}
+function setNom(k) {
+  newNom = k;
+  setPressed($("#nomSeg"), "nom", k);
+  const cat = S.presets[k]?.category;
+  $("#catInput").placeholder = cat || "Назва категорії без «Category:»";
+  if (!$("#catInput").dataset.touched) $("#catInput").value = cat || "";
+}
+$("#nomSeg").addEventListener("click", e => { const b = e.target.closest("[data-nom]"); if (b) setNom(b.dataset.nom); });
+$("#catInput").addEventListener("input", e => e.target.dataset.touched = "1");
+$("#srcSeg").addEventListener("click", e => {
+  const b = e.target.closest("[data-src]"); if (!b) return;
+  newSrc = b.dataset.src;
+  setPressed($("#srcSeg"), "src", newSrc);
+  $("#commonsField").hidden = newSrc !== "commons"; $("#folderField").hidden = newSrc !== "folder";
+  if (newSrc === "folder") browse($("#folderInput").value || "~");
+});
+async function browse(path) {
+  try {
+    const r = await api(`/api/fs?path=${encodeURIComponent(path)}`);
+    $("#folderInput").value = r.path;
+    $("#fsList").innerHTML = (r.parent ? `<div data-p="${esc(r.parent)}">⬆ ..</div>` : "") +
+      `<div class="muted small" style="cursor:default">Фото в цій папці: ${r.images}</div>` +
+      r.dirs.map(d => `<div data-p="${esc(r.path + "/" + d)}">📁 ${esc(d)}</div>`).join("");
+  } catch (e) { $("#fsList").innerHTML = `<div class="muted">${esc(e.message)}</div>`; }
+}
+$("#fsList").addEventListener("click", e => { const d = e.target.closest("[data-p]"); if (d) browse(d.dataset.p); });
+$("#folderInput").addEventListener("change", e => browse(e.target.value));
+// Enter у полі шляху — відкрити папку, а не запускати прогін
+$("#folderInput").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); browse(e.target.value); } });
+$("#cancelNewRun").onclick = () => $("#newRunDlg").close();
+$("#newRunForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const source = newSrc === "commons" ? $("#catInput").value.trim() : $("#folderInput").value.trim();
+  const limit = +$("#limitInput").value || null;
+  $("#createRunBtn").disabled = true;
+  try {
+    const run = await api("/api/runs", {method:"POST", body:{name: $("#nameInput").value, nomination:newNom, source_type:newSrc, source, limit}});
+    $("#newRunDlg").close();
+    $("#nameInput").value = ""; $("#limitInput").value = "";
+    await loadRuns(); await selectRun(run.id);
+    toast("Аналіз запущено");
+  } catch (err) { showNewRunErr(err.message); }
+  finally { $("#createRunBtn").disabled = false; }
+});
+$("#newRunBtn").onclick = openNewRun;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Меню та дії з прогоном
+// ═══════════════════════════════════════════════════════════════════════════
+function bindMenu(m) {
+  m.querySelector("button").addEventListener("click", e => { e.stopPropagation(); document.querySelectorAll(".menu.open").forEach(x => x !== m && x.classList.remove("open")); m.classList.toggle("open"); });
+}
+document.addEventListener("click", () => document.querySelectorAll(".menu.open").forEach(m => m.classList.remove("open")));
+bindMenu($("#exportMenu")); bindMenu($("#runMenu"));
+$("#exportMenu").addEventListener("click", async e => {
+  const b = e.target.closest("[data-export]"); if (!b) return;
+  await saveThresholds();   // експорт використовує збережені пороги
+  location.href = `/api/runs/${S.run.id}/export?format=${b.dataset.export}`;
+});
+$("#runSelect").addEventListener("change", async e => { await saveThresholds(); selectRun(+e.target.value); });
+$("#pauseBtn").onclick = async () => { S.run = await api(`/api/runs/${S.run.id}/pause`, {method:"POST"}); toast("Призупиняю…", "notice"); setTimeout(async () => { S.run = await api(`/api/runs/${S.run.id}`); renderRunHeader(); loadRuns(); }, 1500); };
+$("#resumeBtn").onclick = async () => { S.run = await api(`/api/runs/${S.run.id}/start`, {method:"POST"}); renderRunHeader(); loadRuns(); };
+$("#renameRun").onclick = async () => {
+  const name = prompt("Нова назва прогону:", S.run.name); if (!name) return;
+  await api(`/api/runs/${S.run.id}`, {method:"PATCH", body:{name}}); await loadRuns();
+};
+$("#retryErrors").onclick = async () => {
+  const r = await api(`/api/runs/${S.run.id}/retry-errors`, {method:"POST"});
+  toast(r.requeued ? `Повторно в черзі: ${r.requeued}` : "Помилок немає", "notice"); S.run = r.run; renderRunHeader();
+};
+$("#deleteRun").onclick = async () => {
+  if (!confirm(`Видалити прогін «${S.run.name}» разом з усіма метриками та ручними рішеннями? Самі фото не видаляються.`)) return;
+  await api(`/api/runs/${S.run.id}`, {method:"DELETE"});
+  S.run = null; await loadRuns();
+  if (S.runs.length) selectRun(S.runs[0].id); else renderWelcome();
+};
+window.addEventListener("beforeunload", () => { if (S.dirtySave && S.run) navigator.sendBeacon?.(`/api/runs/${S.run.id}/thresholds`, new Blob([JSON.stringify(S.t)], {type:"application/json"})); });
+window.addEventListener("resize", debounce(drawBoxes, 100));
+
+init().catch(e => { $("#app").innerHTML = `<div class="welcome">${message("Помилка: " + esc(e.message), "error")}</div>`; });
+</script>
+</body>
+</html>
