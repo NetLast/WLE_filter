@@ -175,6 +175,7 @@ def create_app(store: Store | None = None, worker: Worker | None = None) -> Fast
         name = body.name.strip() or f"{presets[body.nomination]['label']}: {source}"
         run_id = store.create_run(name, body.nomination, body.source_type, source,
                                   presets[body.nomination]["thresholds"])
+        worker.clear_cache(run_id)   # залишки кешу з бази, яку було видалено
         if body.start:
             worker.start(run_id, limit=body.limit)
         return run_or_404(run_id)
@@ -195,6 +196,7 @@ def create_app(store: Store | None = None, worker: Worker | None = None) -> Fast
         worker.pause(run_id)
         worker.join(run_id, timeout=30)
         store.delete_run(run_id)
+        worker.clear_cache(run_id)
         return Response(status_code=204)
 
     @app.post("/api/runs/{run_id}/start")
@@ -295,8 +297,10 @@ def create_app(store: Store | None = None, worker: Worker | None = None) -> Fast
             raise HTTPException(404)
         cache = worker.cache_path(img)
         if cache.exists():
+            # no-cache: браузер щоразу перевіряє ETag (дешево, 304), тож після
+            # перестворення бази не покаже мініатюру іншого фото з тим самим номером
             return FileResponse(cache, media_type="image/jpeg",
-                                headers={"Cache-Control": "max-age=86400"})
+                                headers={"Cache-Control": "no-cache"})
         if img.get("thumb_url"):
             return RedirectResponse(img["thumb_url"])
         if img.get("local_path") and os.path.exists(img["local_path"]):

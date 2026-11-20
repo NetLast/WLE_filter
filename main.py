@@ -34,6 +34,7 @@ def cmd_run(args) -> int:
     print(f"Прогін #{run_id}: {name}")
 
     worker = Worker(store)
+    worker.clear_cache(run_id)
     worker.start(run_id, limit=args.limit)
     try:
         while worker.is_running(run_id):

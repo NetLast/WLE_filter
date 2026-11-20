@@ -318,8 +318,8 @@ class TestStoreWorker(unittest.TestCase):
         run = self.store.get_run(run_id)
         self.assertEqual(run["status"], "done")
         self.assertEqual((run["total"], run["processed"], run["errors"]), (5, 5, 0))
-        self.assertTrue(all((self.store.cache_dir / str(run_id) / f"{i['id']}.jpg").exists()
-                            for i in self.store.images(run_id)))
+        w = Worker(self.store, yolo_loader=None, ocr_loader=None)
+        self.assertTrue(all(w.cache_path(i).exists() for i in self.store.images(run_id)))
 
     def test_add_candidates_idempotent(self):
         run_id = self.store.create_run("t", "quality", "folder", str(self.photos), {})
@@ -402,6 +402,43 @@ class TestStoreWorker(unittest.TestCase):
             rows = list(csv.DictReader(f))
         self.assertEqual(len(rows), 5)
         self.assertTrue(any(r["reasons"].startswith("blur:") for r in rows))
+
+
+class TestStaleCache(unittest.TestCase):
+    """Регресія: базу видалено, а кеш мініатюр лишився — новий прогін з тими
+    самими номерами фото не повинен підхопити чужі мініатюри."""
+
+    def test_new_db_does_not_reuse_old_thumbnails(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            old_ph, new_ph = d / "old", d / "new"
+            old_ph.mkdir(), new_ph.mkdir()
+            to_pil(sharp_img(400)).save(old_ph / "a.jpg")
+            to_pil(blurry_img(400)).save(new_ph / "z.jpg")
+            db = d / "data" / "db.sqlite3"
+
+            st = Store(db)
+            rid = st.create_run("old", "quality", "folder", str(old_ph), Thresholds().to_dict())
+            w = Worker(st, yolo_loader=lambda: fake_yolo([]), ocr_loader=None)
+            w.start(rid)
+            w.join(rid, 30)
+            old_blur = st.images(rid)[0]["blur"]
+            st.close()
+            db.unlink()                                   # користувач видалив базу
+
+            st = Store(db)
+            rid2 = st.create_run("new", "quality", "folder", str(new_ph), Thresholds().to_dict())
+            self.assertEqual(rid2, rid)                   # той самий номер прогону
+            w = Worker(st, yolo_loader=lambda: fake_yolo([]), ocr_loader=None)
+            w.start(rid2)
+            w.join(rid2, 30)
+            img = st.images(rid2)[0]
+            self.assertEqual(img["id"], 1)                # той самий номер фото
+            self.assertLess(img["blur"], 200)             # проаналізовано НОВЕ (розмите) фото
+            self.assertGreater(old_blur, 200)
+            self.assertEqual(analysis.blur_score(
+                analysis.pil_to_bgr(Image.open(w.cache_path(img)).convert("RGB"))), img["blur"])
+            st.close()
 
 
 class TestLegacyRecount(unittest.TestCase):
@@ -580,6 +617,13 @@ class TestAPI(unittest.TestCase):
                                           json={"ids": ids, "decision": "reject"}).json()["updated"], len(ids))
         self.assertEqual(self.client.delete(f"/api/runs/{rid}").status_code, 204)
         self.assertEqual(self.client.get(f"/api/runs/{rid}").status_code, 404)
+
+    def test_thumb_not_cached_by_browser(self):
+        rid = self.create()
+        iid = self.results(rid, view="all")["items"][0]["id"]
+        r = self.client.get(f"/api/images/{iid}/thumb")
+        self.assertEqual(r.headers["cache-control"], "no-cache")
+        self.assertIn("etag", r.headers)
 
     def test_fs_browse(self):
         r = self.client.get("/api/fs", params={"path": str(self.photos)}).json()

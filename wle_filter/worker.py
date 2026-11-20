@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import hashlib
+import shutil
 import threading
 import traceback
 from pathlib import Path
@@ -119,4 +121,12 @@ class Worker:
             store.save_error(img["id"], msg)
 
     def cache_path(self, img: dict) -> Path:
-        return self.store.cache_dir / str(img["run_id"]) / f"{img['id']}.jpg"
+        """Файл мініатюри. Ім'я містить відбиток джерела (назва + URL/шлях), тому
+        мініатюра іншого фото з тим самим номером (напр., після видалення бази)
+        ніколи не буде підхоплена — завантажиться правильна."""
+        src = f"{img.get('key')}|{img.get('thumb_url') or img.get('local_path') or ''}"
+        tag = hashlib.sha1(src.encode("utf-8")).hexdigest()[:12]
+        return self.store.cache_dir / str(img["run_id"]) / f"{img['id']}_{tag}.jpg"
+
+    def clear_cache(self, run_id: int):
+        shutil.rmtree(self.store.cache_dir / str(run_id), ignore_errors=True)
