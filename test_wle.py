@@ -81,29 +81,24 @@ class TestThresholds(unittest.TestCase):
         self.assertEqual((t.hash_type, t.duplicate_scope), ("dhash", "all"))
 
     def test_confidence_not_below_floor(self):
-        self.assertGreaterEqual(Thresholds.from_dict({"person_confidence": 0}).person_confidence,
-                                config.PERSON_CONF_FLOOR)
+        self.assertEqual(Thresholds.from_dict({"person_confidence": 0}).person_confidence, 0.25)
 
     def test_presets_have_both_nominations(self):
         p = config.load_presets()
         self.assertIn("quality", p)
         self.assertIn("quantity", p)
-        self.assertEqual(p["quantity"]["thresholds"]["duplicate_scope"], "author")
+
+    def test_defaults_match_original_constants(self):
+        t = Thresholds()
+        self.assertEqual((t.blur_threshold, t.person_confidence, t.person_area, t.sign_coverage,
+                          t.duplicate_distance, t.hash_type),
+                         (200, 0.25, 0.05, 0.15, 12, "dhash"))
 
     def test_save_and_reset_preset(self):
         config.save_preset("quality", {**Thresholds().to_dict(), "blur_threshold": 333})
         self.assertEqual(config.load_presets()["quality"]["thresholds"]["blur_threshold"], 333)
         config.reset_preset("quality")
-        self.assertEqual(config.load_presets()["quality"]["thresholds"]["blur_threshold"],
-                         Thresholds().blur_threshold)
-
-    def test_old_presets_file_ignored(self):
-        import json
-        config.PRESETS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        config.PRESETS_FILE.write_text(json.dumps({"quality": {"thresholds": {"blur_threshold": 999}}}))
-        self.assertEqual(config.load_presets()["quality"]["thresholds"]["blur_threshold"],
-                         Thresholds().blur_threshold)
-        config.PRESETS_FILE.unlink()
+        self.assertEqual(config.load_presets()["quality"]["thresholds"]["blur_threshold"], 200)
 
 
 # ═══ analysis ════════════════════════════════════════════════════════════════
@@ -125,10 +120,13 @@ class TestAnalysis(unittest.TestCase):
         self.assertAlmostEqual(dets[0]["area"], 0.25, places=3)
         self.assertEqual(dets[0]["box"], [0.0, 0.0, 0.5, 0.5])
 
-    def test_person_detections_keep_low_conf(self):
+    def test_person_detections_yolo_defaults(self):
+        # як у вихідному check_person: модель викликається без зміни conf
         img = np.zeros((100, 100, 3), dtype=np.uint8)
-        dets = analysis.person_detections(img, fake_yolo([(0, 0.1, [0, 0, 50, 50]), (0, 0.01, [0, 0, 90, 90])]))
-        self.assertEqual([d["conf"] for d in dets], [0.1])     # 0.01 < floor
+        model = fake_yolo([(0, 0.3, [0, 0, 50, 50])])
+        analysis.person_detections(img, model)
+        self.assertNotIn("conf", model.call_args.kwargs)
+        self.assertNotIn("classes", model.call_args.kwargs)
 
     def test_sign_blank_zero(self):
         self.assertEqual(analysis.sign_coverage(blank_img()), 0.0)
@@ -146,78 +144,8 @@ class TestAnalysis(unittest.TestCase):
 
     def test_analyze_keys(self):
         m = analysis.analyze(to_pil(sharp_img()), fake_yolo([]))
-        for k in ("blur", "blur_global", "persons", "sign", "text", "dhash", "phash", "horizon_angle",
-                  "horizon_conf", "shadows", "highlights", "sat_clip", "_sift", "_embed"):
-            self.assertIn(k, m)
+        self.assertEqual(set(m), {"blur", "persons", "sign", "dhash", "phash"})
         self.assertEqual(len(m["dhash"]), 16)
-
-    def test_bokeh_macro_not_blurry(self):
-        # різкий об'єкт у центрі + сильно розмитий фон
-        img = blurry_img(600)
-        img[240:360, 240:360] = sharp_img(120)
-        sharp, glob = analysis.blur_scores(img)
-        self.assertGreater(sharp, glob * 2)
-        self.assertGreater(sharp, Thresholds().blur_threshold)
-
-    def horizon_img(self, angle):
-        w, h = 800, 600
-        img = np.zeros((h, w, 3), np.uint8)
-        img[:] = (230, 200, 150)                          # «небо»
-        ys = (np.arange(w) - w / 2) * np.tan(np.radians(angle)) + h * 0.45
-        for x in range(w):
-            img[int(ys[x]):, x] = (40, 110, 60)           # «земля»
-        rng = np.random.default_rng(0)
-        return np.clip(img + rng.normal(0, 6, img.shape), 0, 255).astype(np.uint8)
-
-    def test_horizon_level(self):
-        r = analysis.horizon_tilt(self.horizon_img(0))
-        self.assertLess(abs(r["horizon_angle"]), 0.5)
-        self.assertGreater(r["horizon_conf"], 2)
-
-    def test_horizon_tilted(self):
-        r = analysis.horizon_tilt(self.horizon_img(4))
-        self.assertAlmostEqual(r["horizon_angle"], 4, delta=0.6)
-        r = analysis.horizon_tilt(self.horizon_img(-3))
-        self.assertAlmostEqual(r["horizon_angle"], -3, delta=0.6)
-
-    def test_horizon_absent(self):
-        r = analysis.horizon_tilt(np.stack([np.full((600, 800), 128, np.uint8)] * 3, -1))
-        self.assertLess(r["horizon_conf"], 1.5)
-
-    def test_shadows(self):
-        img = blank_img(200, 200)
-        img[:100] = 5
-        m = analysis.exposure_color(img)
-        self.assertAlmostEqual(m["shadows"], 0.5, places=2)
-        self.assertEqual(m["sat_clip"], 0.0)
-
-    def test_text_regions_with_fake_ocr(self):
-        img = np.full((200, 400, 3), 200, np.uint8)
-        fake = MagicMock(return_value=([
-            [[[100, 50], [300, 50], [300, 80], [100, 80]], "Quercus robur", "0.9"],
-            [[[100, 90], [250, 90], [250, 110], [100, 110]], "1400 років", 0.85],
-            [[[0, 0], [10, 0], [10, 10], [0, 10]], "~", 0.99],          # не текст
-            [[[0, 0], [400, 0], [400, 200], [0, 200]], "трава", 0.3],   # низька впевненість
-        ], None))
-        r = analysis.text_regions(img, fake)
-        self.assertAlmostEqual(r["sign"], 200 * 60 / (400 * 200), places=3)
-        self.assertIn("Quercus", r["text"])
-        self.assertEqual(len(r["text_boxes"]), 2)
-
-    def test_sift_same_scene_vs_different(self):
-        rng = np.random.default_rng(3)
-        base = cv2.resize(rng.integers(0, 255, (60, 80, 3), dtype=np.uint8), (800, 600),
-                          interpolation=cv2.INTER_NEAREST)
-        base = cv2.GaussianBlur(base, (3, 3), 0)
-        crop = cv2.resize(base[40:560, 60:760], (800, 600))         # інше кадрування
-        other = cv2.resize(rng.integers(0, 255, (60, 80, 3), dtype=np.uint8), (800, 600),
-                           interpolation=cv2.INTER_NEAREST)
-        fa, fb, fc = (analysis.sift_features(x) for x in (base, crop, other))
-        self.assertGreater(analysis.match_inliers(fa, fb), 50)
-        self.assertLess(analysis.match_inliers(fa, fc), 15)
-
-
-HASH = Thresholds(duplicate_method="hash", hash_type="dhash")
 
 
 # ═══ verdict ═════════════════════════════════════════════════════════════════
@@ -236,13 +164,21 @@ class TestVerdict(unittest.TestCase):
         self.assertEqual(person_area(persons, 0.25), 0.2)
         self.assertEqual(person_area(persons, 0.5), 0.02)
         it = [item(1, persons=persons)]
-        self.assertEqual(evaluate(it, Thresholds(person_confidence=0.25, person_area=0.05))[0]["verdict"], "flagged")
-        self.assertEqual(evaluate(it, Thresholds(person_confidence=0.5, person_area=0.05))[0]["verdict"], "ok")
+        self.assertEqual(evaluate(it, Thresholds(person_confidence=0.25))[0]["verdict"], "flagged")
+        self.assertEqual(evaluate(it, Thresholds(person_confidence=0.5))[0]["verdict"], "ok")
 
     def test_sign(self):
         it = [item(1, sign=0.3)]
         r = evaluate(it, Thresholds(sign_coverage=0.15))[0]
         self.assertEqual(r["reasons"][0]["code"], "sign")
+        # як у вихідному коді: coverage > SIGN_COVERAGE_MIN (строго)
+        self.assertEqual(evaluate([item(1, sign=0.15)], Thresholds(sign_coverage=0.15))[0]["verdict"], "ok")
+
+    def test_duplicate_first_match_not_closest(self):
+        its = [item(1, dhash="000000000000000f"), item(2, dhash="0000000000000ff0"),
+               item(3, dhash="00000000000000ff")]
+        d = find_duplicates(its, Thresholds(duplicate_distance=8))
+        self.assertEqual(d[3], (1, 4))   # перший у реєстрі, хоча 2 теж у межах
 
     def test_min_mpx(self):
         it = [item(1, width=1000, height=1000)]
@@ -261,76 +197,42 @@ class TestVerdict(unittest.TestCase):
 
     def test_duplicates_first_is_original(self):
         h = "ffff0000ffff0000"
-        res = evaluate([item(1, dhash=h), item(2, dhash="ffff0000ffff0001")], HASH)
+        res = evaluate([item(1, dhash=h), item(2, dhash="ffff0000ffff0001")], Thresholds())
         self.assertEqual(res[0]["verdict"], "ok")
-        self.assertEqual(res[1]["reasons"][0], {"code": "duplicate", "value": 1, "of": 1, "how": "hash"})
+        self.assertEqual(res[1]["reasons"][0], {"code": "duplicate", "value": 1, "of": 1})
 
     def test_duplicate_distance_live(self):
         its = [item(1, dhash="0000000000000000"), item(2, dhash="00000000000000ff")]  # dist 8
-        self.assertIn(2, find_duplicates(its, Thresholds(duplicate_method="hash", hash_type="dhash", duplicate_distance=8)))
-        self.assertNotIn(2, find_duplicates(its, Thresholds(duplicate_method="hash", hash_type="dhash", duplicate_distance=7)))
+        self.assertIn(2, find_duplicates(its, Thresholds(duplicate_distance=8)))
+        self.assertNotIn(2, find_duplicates(its, Thresholds(duplicate_distance=7)))
 
     def test_duplicate_scope_author(self):
         its = [item(1, dhash="00" * 8, author="A"), item(2, dhash="00" * 8, author="B")]
-        self.assertIn(2, find_duplicates(its, Thresholds(duplicate_method="hash", hash_type="dhash", duplicate_scope="all")))
-        self.assertEqual(find_duplicates(its, Thresholds(duplicate_method="hash", hash_type="dhash", duplicate_scope="author")), {})
+        self.assertIn(2, find_duplicates(its, Thresholds(duplicate_scope="all")))
+        self.assertEqual(find_duplicates(its, Thresholds(duplicate_scope="author")), {})
 
     def test_duplicate_not_registered(self):
         # 2 — дублікат 1; 3 близьке до 2, але далеке від 1 → не дублікат (як у v2)
         its = [item(1, dhash="0000000000000000"), item(2, dhash="000000000000000f"),
                item(3, dhash="00000000000000ff")]
-        d = find_duplicates(its, Thresholds(duplicate_method="hash", hash_type="dhash", duplicate_distance=4))
+        d = find_duplicates(its, Thresholds(duplicate_distance=4))
         self.assertEqual(set(d), {2})
 
     def test_phash_used_when_selected(self):
         its = [item(1, dhash="00" * 8, phash="ff" * 8), item(2, dhash="ff" * 8, phash="ff" * 8)]
-        self.assertEqual(find_duplicates(its, Thresholds(duplicate_method="hash", hash_type="dhash")), {})
-        self.assertIn(2, find_duplicates(its, Thresholds(duplicate_method="hash", hash_type="phash")))
+        self.assertEqual(find_duplicates(its, Thresholds(hash_type="dhash")), {})
+        self.assertIn(2, find_duplicates(its, Thresholds(hash_type="phash")))
 
     def test_real_hashes_brightness_shift(self):
         a = to_pil(sharp_img())
         b = ImageEnhance.Brightness(a).enhance(1.1)
         hs = [analysis.image_hashes(x)["dhash"] for x in (a, b)]
-        self.assertIn(2, find_duplicates([item(1, dhash=hs[0]), item(2, dhash=hs[1])], HASH))
-
-    def test_feature_pairs_duplicates(self):
-        its = [item(1, author="A"), item(2, author="A"), item(3, author="B")]
-        pairs = [(1, 2, 80), (1, 3, 40), (2, 3, 10)]
-        d = find_duplicates(its, Thresholds(duplicate_inliers=30), pairs)
-        self.assertEqual(d, {2: (1, 80, "points"), 3: (1, 40, "points")})
-        d = find_duplicates(its, Thresholds(duplicate_inliers=50), pairs)
-        self.assertEqual(set(d), {2})
-        d = find_duplicates(its, Thresholds(duplicate_inliers=30, duplicate_scope="author"), pairs)
-        self.assertEqual(set(d), {2})
-        # порядок у парі неважливий: дублікат — пізніше фото
-        self.assertEqual(find_duplicates(its, Thresholds(), [(2, 1, 99)]), {2: (1, 99, "points")})
-
-    def test_identical_phash_always_duplicate(self):
-        its = [item(1, phash="ab" * 8), item(2, phash="ab" * 8)]
-        self.assertIn(2, find_duplicates(its, Thresholds(), []))
-
-    def test_new_reasons(self):
-        t = Thresholds(saturation_enabled=True, highlights_enabled=True)
-        r = evaluate([item(1, horizon_angle=3.0, horizon_conf=2.5, shadows=0.4,
-                           highlights=0.5, sat_clip=0.02)], t)[0]
-        self.assertEqual({x["code"] for x in r["reasons"]},
-                         {"horizon", "shadows", "highlights", "saturation"})
-        # горизонт з низькою впевненістю (макро, ліс) не враховується
-        r = evaluate([item(1, horizon_angle=8.0, horizon_conf=1.2)], t)[0]
-        self.assertEqual(r["verdict"], "ok")
-        r = evaluate([item(1, horizon_angle=1.0, horizon_conf=3)], t)[0]
-        self.assertEqual(r["verdict"], "ok")
-
-    def test_outdated_is_pending(self):
-        self.assertEqual(evaluate([item(1, outdated=True, blur=1)], Thresholds())[0]["verdict"], "pending")
+        self.assertIn(2, find_duplicates([item(1, dhash=hs[0]), item(2, dhash=hs[1])], Thresholds()))
 
     def test_reasons_text_legacy_format(self):
         s = reasons_text([{"code": "blur", "value": 12.5}, {"code": "person", "value": 0.12},
-                          {"code": "duplicate", "value": 3, "of": 1, "how": "hash"},
-                          {"code": "duplicate", "value": 60, "of": 1, "how": "points"},
-                          {"code": "horizon", "value": 4.5}])
-        self.assertEqual(s, "blur:12.5 | person:12.0% | duplicate:similar(dist=3) | "
-                            "duplicate:points=60 | horizon:4.5°")
+                          {"code": "duplicate", "value": 3, "of": 1}])
+        self.assertEqual(s, "blur:12.5 | person:12.0% | duplicate:similar(dist=3)")
 
 
 # ═══ sources ═════════════════════════════════════════════════════════════════
@@ -425,15 +327,34 @@ class TestStoreWorker(unittest.TestCase):
         self.assertEqual(self.store.add_candidates(run_id, c), 5)
         self.assertEqual(self.store.add_candidates(run_id, c), 0)
 
-    def test_quality_vs_quantity_duplicates(self):
+    def test_duplicate_scope_author_on_folder(self):
         run_id = self.run_folder()
         imgs = self.store.images(run_id)
-        names = {i["id"]: i["key"] for i in imgs}
-        q = evaluate(imgs, Thresholds.from_dict(config.load_presets()["quality"]["thresholds"]))
-        qn = evaluate(imgs, Thresholds.from_dict(config.load_presets()["quantity"]["thresholds"]))
-        dup = lambda ev: {names[e["id"]] for e in ev if any(r["code"] == "duplicate" for r in e["reasons"])}
-        self.assertEqual(len(dup(q)), 2)                 # серед усіх: 2 копії
-        self.assertEqual(len(dup(qn)), 1)                # лише в межах автора
+        dup = lambda t: {e["id"] for e in evaluate(imgs, t) if any(r["code"] == "duplicate" for r in e["reasons"])}
+        self.assertEqual(len(dup(Thresholds())), 2)                       # серед усіх
+        self.assertEqual(len(dup(Thresholds(duplicate_scope="author"))), 1)
+
+    def test_reanalyze_outdated(self):
+        run_id = self.run_folder()
+        self.assertEqual(self.store.reanalyze_all(run_id), 5)
+        run = self.store.get_run(run_id)
+        self.assertEqual((run["outdated"], run["processed"]), (5, 0))
+        w = Worker(self.store, yolo_loader=lambda: fake_yolo([]), ocr_loader=None)
+        w.start(run_id)
+        w.join(run_id, 30)
+        self.assertEqual(self.store.get_run(run_id)["processed"], 5)
+
+    def test_migration_from_v31_db(self):
+        import sqlite3
+        p = Path(self.tmp.name) / "old.sqlite3"
+        con = sqlite3.connect(p)
+        con.executescript("CREATE TABLE images (id INTEGER PRIMARY KEY, run_id INTEGER, seq INTEGER, key TEXT,"
+                          " title TEXT, status TEXT DEFAULT 'done', persons TEXT, mver INTEGER DEFAULT 2);"
+                          "INSERT INTO images(run_id, seq, key, title) VALUES (1, 0, 'a', 'a');")
+        con.close()
+        st = Store(p)
+        self.assertTrue(st.images(1)[0]["outdated"])
+        st.close()
 
     def test_error_recorded_and_retry(self):
         Path(self.photos / "A" / "broken.jpg").write_bytes(b"not an image")
@@ -464,38 +385,6 @@ class TestStoreWorker(unittest.TestCase):
         w.start(run_id)
         w.join(run_id, 10)
         self.assertEqual(self.store.get_run(run_id)["processed"], 5)
-
-    def test_reanalyze_outdated(self):
-        run_id = self.run_folder()
-        self.assertEqual(self.store.reanalyze_all(run_id), 5)
-        run = self.store.get_run(run_id)
-        self.assertEqual((run["outdated"], run["processed"]), (5, 0))
-        self.assertEqual(len(self.store.pending_images(run_id)), 5)
-        w = Worker(self.store, yolo_loader=lambda: fake_yolo([]), ocr_loader=None)
-        w.start(run_id)
-        w.join(run_id, 30)
-        self.assertEqual(self.store.get_run(run_id)["processed"], 5)
-
-    def test_sift_saved_and_pairs_found(self):
-        run_id = self.run_folder()
-        imgs = {i["key"]: i for i in self.store.images(run_id)}
-        self.assertTrue(all((self.store.cache_dir / str(run_id) / f"{i['id']}.sift.npz").exists()
-                            for i in imgs.values()))
-        pairs = {(a, b) for a, b, _ in self.store.pairs(run_id)}
-        a, b = imgs["A/1.jpg"]["id"], imgs["A/1_copy.jpg"]["id"]
-        self.assertTrue((a, b) in pairs or (b, a) in pairs)
-
-    def test_migration_adds_columns(self):
-        import sqlite3
-        p = Path(self.tmp.name) / "old.sqlite3"
-        con = sqlite3.connect(p)
-        con.executescript("CREATE TABLE images (id INTEGER PRIMARY KEY, run_id INTEGER, seq INTEGER, key TEXT,"
-                          " title TEXT, status TEXT DEFAULT 'done', persons TEXT);"
-                          "INSERT INTO images(run_id, seq, key, title) VALUES (1, 0, 'a', 'a');")
-        con.close()
-        st = Store(p)
-        self.assertTrue(st.images(1)[0]["outdated"])
-        st.close()
 
     def test_manual_decision(self):
         run_id = self.run_folder()
@@ -530,6 +419,68 @@ class TestLegacyRecount(unittest.TestCase):
             self.assertEqual(counts, {"ok": 1, "flagged": 1, "error": 1})
             rows, counts = recount.recount_legacy_csv(p, Thresholds(blur_threshold=40))
             self.assertEqual(counts["flagged"], 0)
+
+
+# ═══ Еквівалентність з вихідним main.py (перший коміт) ═══════════════════
+ORIGINAL = Path(__file__).parent / "tools" / "original_main.py"
+
+
+@unittest.skipUnless(ORIGINAL.exists(), "немає tools/original_main.py")
+class TestMatchesOriginal(unittest.TestCase):
+    """Метрики й вердикти нового коду мають збігатися з функціями першого коміту."""
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("original_main", ORIGINAL)
+        cls.orig = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.orig)
+        rng = np.random.default_rng(7)
+        cls.images = [sharp_img(400), blurry_img(400), blank_img(300), noise_pil(5, 512),
+                      Image.fromarray(rng.integers(0, 255, (300, 500, 3), dtype=np.uint8))]
+
+    def bgr(self, im):
+        return im if isinstance(im, np.ndarray) else cv2.cvtColor(np.array(im.convert("RGB")), cv2.COLOR_RGB2BGR)
+
+    def test_blur_and_sign_identical(self):
+        for im in self.images:
+            b = self.bgr(im)
+            _, score = self.orig.check_blur(b)
+            self.assertEqual(analysis.blur_score(b), score)
+            _, cov = self.orig.check_sign_or_plaque(b)
+            self.assertEqual(analysis.sign_coverage(b), cov)
+            for thr in (0.0, 0.05, 0.15, cov):
+                self.orig.SIGN_COVERAGE_MIN = thr
+                flagged, _ = self.orig.check_sign_or_plaque(b)
+                ours = evaluate([item(1, sign=analysis.sign_coverage(b))],
+                                Thresholds(sign_coverage=thr))[0]["verdict"] == "flagged"
+                self.assertEqual(flagged, ours)
+
+    def test_person_identical(self):
+        model = fake_yolo([(0, 0.9, [0, 0, 60, 80]), (0, 0.3, [0, 0, 200, 200]), (2, 0.99, [0, 0, 300, 300])])
+        b = np.zeros((300, 300, 3), np.uint8)
+        for conf, area in ((0.25, 0.05), (0.5, 0.05), (0.25, 0.5), (0.95, 0.01)):
+            self.orig.PERSON_CONFIDENCE, self.orig.PERSON_AREA_THRESHOLD = conf, area
+            flagged, fr = self.orig.check_person(b, model)
+            dets = analysis.person_detections(b, model)
+            r = evaluate([item(1, persons=dets)], Thresholds(person_confidence=conf, person_area=area))[0]
+            self.assertEqual(flagged, r["verdict"] == "flagged")
+            self.assertEqual(round(fr, 3), r["person_area"])
+
+    def test_duplicates_identical(self):
+        pils = [noise_pil(i % 4, 256) for i in range(10)]
+        pils[5] = ImageEnhance.Brightness(pils[1]).enhance(1.1)
+        for thr in (0, 6, 12, 20, 30):
+            self.orig.phash_registry.clear()
+            self.orig.HASH_THRESHOLD, self.orig.HASH_TYPE = thr, "dhash"
+            want = {}
+            for i, p in enumerate(pils):
+                is_dup, _, of = self.orig.check_duplicate(p, i)
+                if is_dup:
+                    want[i] = of
+            its = [item(i, dhash=str(analysis.image_hashes(p)["dhash"])) for i, p in enumerate(pils)]
+            got = {k: v[0] for k, v in find_duplicates(its, Thresholds(duplicate_distance=thr)).items()}
+            self.assertEqual(got, want, f"threshold {thr}")
 
 
 # ═══ API ═════════════════════════════════════════════════════════════════════
