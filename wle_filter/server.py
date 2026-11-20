@@ -99,8 +99,9 @@ def _merge(images: list[dict], evals: list[dict]) -> list[dict]:
 
 def _public(item: dict) -> dict:
     keys = ("id", "seq", "title", "author", "page_id", "page_url", "timestamp", "width", "height",
-            "status", "error", "blur", "sign", "persons", "person_area", "reasons",
-            "auto_verdict", "verdict", "manual", "note")
+            "status", "error", "blur", "blur_global", "sign", "text", "text_boxes", "persons", "person_area",
+            "horizon_angle", "horizon_conf", "horizon_row", "shadows", "highlights", "sat_clip",
+            "outdated", "reasons", "auto_verdict", "verdict", "manual", "note")
     d = {k: item.get(k) for k in keys}
     d["thumb"] = f"/api/images/{item['id']}/thumb"
     return d
@@ -136,7 +137,8 @@ def create_app(store: Store | None = None, worker: Worker | None = None) -> Fast
 
     @app.get("/api/info")
     def info():
-        return {"version": __version__, "reasons": REASON_LABELS,
+        from .analysis import get_ocr
+        return {"version": __version__, "reasons": REASON_LABELS, "ocr": get_ocr() is not None,
                 "person_conf_floor": config.PERSON_CONF_FLOOR,
                 "data_dir": str(store.path.parent)}
 
@@ -216,6 +218,16 @@ def create_app(store: Store | None = None, worker: Worker | None = None) -> Fast
             worker.start(run_id)
         return {"requeued": n, "run": run_or_404(run_id)}
 
+    @app.post("/api/runs/{run_id}/reanalyze")
+    def reanalyze(run_id: int):
+        """Повторний аналіз усіх фото (з кешу мініатюр, без нового завантаження)."""
+        run_or_404(run_id)
+        worker.pause(run_id)
+        worker.join(run_id, timeout=30)
+        n = store.reanalyze_all(run_id)
+        worker.start(run_id)
+        return {"requeued": n, "run": run_or_404(run_id)}
+
     @app.put("/api/runs/{run_id}/thresholds")
     @app.post("/api/runs/{run_id}/thresholds", include_in_schema=False)  # для navigator.sendBeacon
     def put_thresholds(run_id: int, thresholds: dict = Body(...)):
@@ -230,7 +242,7 @@ def create_app(store: Store | None = None, worker: Worker | None = None) -> Fast
         run = run_or_404(run_id)
         t = Thresholds.from_dict(q.thresholds if q.thresholds is not None else run["thresholds"])
         images = store.images(run_id)
-        items = _merge(images, evaluate(images, t))
+        items = _merge(images, evaluate(images, t, store.pairs(run_id)))
 
         summary = {"total": len(items), "ok": 0, "flagged": 0, "error": 0, "pending": 0,
                    "manual": 0, "auto_flagged": 0, "overridden": 0,
@@ -247,7 +259,7 @@ def create_app(store: Store | None = None, worker: Worker | None = None) -> Fast
                 if r["code"] in summary["reasons"]:
                     summary["reasons"][r["code"]] += 1
 
-        done = [it for it in items if it["status"] == "done"]
+        done = [it for it in items if it["status"] == "done" and not it.get("outdated")]
         blurs = [it["blur"] for it in done if it["blur"] is not None]
         histograms = {
             "blur": _hist(blurs, 1, max(blurs + [1000]), log=True),
@@ -326,7 +338,7 @@ def create_app(store: Store | None = None, worker: Worker | None = None) -> Fast
         run = run_or_404(run_id)
         t = Thresholds.from_dict(run["thresholds"])
         images = store.images(run_id)
-        items = _merge(images, evaluate(images, t))
+        items = _merge(images, evaluate(images, t, store.pairs(run_id)))
         if only != "all":
             items = [it for it in items if it["verdict"] == only]
         safe = "".join(ch if ch.isalnum() else "_" for ch in run["name"])[:60]
@@ -345,8 +357,11 @@ def create_app(store: Store | None = None, worker: Worker | None = None) -> Fast
                     "verdict": it["verdict"], "auto_verdict": it["auto_verdict"],
                     "manual": it["manual"], "note": it["note"],
                     "reasons": [{k: v for k, v in r.items() if k != "of"} for r in it["reasons"]],
-                    "metrics": {"blur": it["blur"], "sign": it["sign"],
+                    "metrics": {"blur": it["blur"], "sign": it["sign"], "text": it.get("text"),
                                 "person_area": it["person_area"],
+                                "horizon_angle": it.get("horizon_angle"), "horizon_conf": it.get("horizon_conf"),
+                                "shadows": it.get("shadows"), "highlights": it.get("highlights"),
+                                "sat_clip": it.get("sat_clip"),
                                 "width": it["width"], "height": it["height"]},
                 } for it in items],
             }
@@ -356,6 +371,7 @@ def create_app(store: Store | None = None, worker: Worker | None = None) -> Fast
 
         buf = io.StringIO()
         cols = ["file", "page_id", "author", "blur_score", "person_area", "sign_coverage",
+                "horizon_angle", "shadows", "sat_clip", "text",
                 "duplicate_of", "width", "height", "verdict", "auto_verdict", "manual",
                 "reasons", "note", "page_url", "local_path"]
         w = csv.DictWriter(buf, fieldnames=cols)
@@ -365,6 +381,10 @@ def create_app(store: Store | None = None, worker: Worker | None = None) -> Fast
             w.writerow({"file": it["title"], "page_id": it["page_id"] or "", "author": it["author"] or "",
                         "blur_score": it["blur"] if it["blur"] is not None else "",
                         "person_area": it["person_area"], "sign_coverage": it["sign"] if it["sign"] is not None else "",
+                        "horizon_angle": it.get("horizon_angle") if it.get("horizon_angle") is not None else "",
+                        "shadows": it.get("shadows") if it.get("shadows") is not None else "",
+                        "sat_clip": it.get("sat_clip") if it.get("sat_clip") is not None else "",
+                        "text": it.get("text") or "",
                         "duplicate_of": dup, "width": it["width"] or "", "height": it["height"] or "",
                         "verdict": it["verdict"], "auto_verdict": it["auto_verdict"],
                         "manual": it["manual"] or "",

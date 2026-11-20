@@ -94,7 +94,16 @@ class TestThresholds(unittest.TestCase):
         config.save_preset("quality", {**Thresholds().to_dict(), "blur_threshold": 333})
         self.assertEqual(config.load_presets()["quality"]["thresholds"]["blur_threshold"], 333)
         config.reset_preset("quality")
-        self.assertEqual(config.load_presets()["quality"]["thresholds"]["blur_threshold"], 200)
+        self.assertEqual(config.load_presets()["quality"]["thresholds"]["blur_threshold"],
+                         Thresholds().blur_threshold)
+
+    def test_old_presets_file_ignored(self):
+        import json
+        config.PRESETS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        config.PRESETS_FILE.write_text(json.dumps({"quality": {"thresholds": {"blur_threshold": 999}}}))
+        self.assertEqual(config.load_presets()["quality"]["thresholds"]["blur_threshold"],
+                         Thresholds().blur_threshold)
+        config.PRESETS_FILE.unlink()
 
 
 # ═══ analysis ════════════════════════════════════════════════════════════════
@@ -137,8 +146,78 @@ class TestAnalysis(unittest.TestCase):
 
     def test_analyze_keys(self):
         m = analysis.analyze(to_pil(sharp_img()), fake_yolo([]))
-        self.assertEqual(set(m), {"blur", "persons", "sign", "dhash", "phash"})
+        for k in ("blur", "blur_global", "persons", "sign", "text", "dhash", "phash", "horizon_angle",
+                  "horizon_conf", "shadows", "highlights", "sat_clip", "_sift", "_embed"):
+            self.assertIn(k, m)
         self.assertEqual(len(m["dhash"]), 16)
+
+    def test_bokeh_macro_not_blurry(self):
+        # різкий об'єкт у центрі + сильно розмитий фон
+        img = blurry_img(600)
+        img[240:360, 240:360] = sharp_img(120)
+        sharp, glob = analysis.blur_scores(img)
+        self.assertGreater(sharp, glob * 2)
+        self.assertGreater(sharp, Thresholds().blur_threshold)
+
+    def horizon_img(self, angle):
+        w, h = 800, 600
+        img = np.zeros((h, w, 3), np.uint8)
+        img[:] = (230, 200, 150)                          # «небо»
+        ys = (np.arange(w) - w / 2) * np.tan(np.radians(angle)) + h * 0.45
+        for x in range(w):
+            img[int(ys[x]):, x] = (40, 110, 60)           # «земля»
+        rng = np.random.default_rng(0)
+        return np.clip(img + rng.normal(0, 6, img.shape), 0, 255).astype(np.uint8)
+
+    def test_horizon_level(self):
+        r = analysis.horizon_tilt(self.horizon_img(0))
+        self.assertLess(abs(r["horizon_angle"]), 0.5)
+        self.assertGreater(r["horizon_conf"], 2)
+
+    def test_horizon_tilted(self):
+        r = analysis.horizon_tilt(self.horizon_img(4))
+        self.assertAlmostEqual(r["horizon_angle"], 4, delta=0.6)
+        r = analysis.horizon_tilt(self.horizon_img(-3))
+        self.assertAlmostEqual(r["horizon_angle"], -3, delta=0.6)
+
+    def test_horizon_absent(self):
+        r = analysis.horizon_tilt(np.stack([np.full((600, 800), 128, np.uint8)] * 3, -1))
+        self.assertLess(r["horizon_conf"], 1.5)
+
+    def test_shadows(self):
+        img = blank_img(200, 200)
+        img[:100] = 5
+        m = analysis.exposure_color(img)
+        self.assertAlmostEqual(m["shadows"], 0.5, places=2)
+        self.assertEqual(m["sat_clip"], 0.0)
+
+    def test_text_regions_with_fake_ocr(self):
+        img = np.full((200, 400, 3), 200, np.uint8)
+        fake = MagicMock(return_value=([
+            [[[100, 50], [300, 50], [300, 80], [100, 80]], "Quercus robur", "0.9"],
+            [[[100, 90], [250, 90], [250, 110], [100, 110]], "1400 років", 0.85],
+            [[[0, 0], [10, 0], [10, 10], [0, 10]], "~", 0.99],          # не текст
+            [[[0, 0], [400, 0], [400, 200], [0, 200]], "трава", 0.3],   # низька впевненість
+        ], None))
+        r = analysis.text_regions(img, fake)
+        self.assertAlmostEqual(r["sign"], 200 * 60 / (400 * 200), places=3)
+        self.assertIn("Quercus", r["text"])
+        self.assertEqual(len(r["text_boxes"]), 2)
+
+    def test_sift_same_scene_vs_different(self):
+        rng = np.random.default_rng(3)
+        base = cv2.resize(rng.integers(0, 255, (60, 80, 3), dtype=np.uint8), (800, 600),
+                          interpolation=cv2.INTER_NEAREST)
+        base = cv2.GaussianBlur(base, (3, 3), 0)
+        crop = cv2.resize(base[40:560, 60:760], (800, 600))         # інше кадрування
+        other = cv2.resize(rng.integers(0, 255, (60, 80, 3), dtype=np.uint8), (800, 600),
+                           interpolation=cv2.INTER_NEAREST)
+        fa, fb, fc = (analysis.sift_features(x) for x in (base, crop, other))
+        self.assertGreater(analysis.match_inliers(fa, fb), 50)
+        self.assertLess(analysis.match_inliers(fa, fc), 15)
+
+
+HASH = Thresholds(duplicate_method="hash", hash_type="dhash")
 
 
 # ═══ verdict ═════════════════════════════════════════════════════════════════
@@ -157,8 +236,8 @@ class TestVerdict(unittest.TestCase):
         self.assertEqual(person_area(persons, 0.25), 0.2)
         self.assertEqual(person_area(persons, 0.5), 0.02)
         it = [item(1, persons=persons)]
-        self.assertEqual(evaluate(it, Thresholds(person_confidence=0.25))[0]["verdict"], "flagged")
-        self.assertEqual(evaluate(it, Thresholds(person_confidence=0.5))[0]["verdict"], "ok")
+        self.assertEqual(evaluate(it, Thresholds(person_confidence=0.25, person_area=0.05))[0]["verdict"], "flagged")
+        self.assertEqual(evaluate(it, Thresholds(person_confidence=0.5, person_area=0.05))[0]["verdict"], "ok")
 
     def test_sign(self):
         it = [item(1, sign=0.3)]
@@ -182,42 +261,76 @@ class TestVerdict(unittest.TestCase):
 
     def test_duplicates_first_is_original(self):
         h = "ffff0000ffff0000"
-        res = evaluate([item(1, dhash=h), item(2, dhash="ffff0000ffff0001")], Thresholds())
+        res = evaluate([item(1, dhash=h), item(2, dhash="ffff0000ffff0001")], HASH)
         self.assertEqual(res[0]["verdict"], "ok")
-        self.assertEqual(res[1]["reasons"][0], {"code": "duplicate", "value": 1, "of": 1})
+        self.assertEqual(res[1]["reasons"][0], {"code": "duplicate", "value": 1, "of": 1, "how": "hash"})
 
     def test_duplicate_distance_live(self):
         its = [item(1, dhash="0000000000000000"), item(2, dhash="00000000000000ff")]  # dist 8
-        self.assertIn(2, find_duplicates(its, Thresholds(duplicate_distance=8)))
-        self.assertNotIn(2, find_duplicates(its, Thresholds(duplicate_distance=7)))
+        self.assertIn(2, find_duplicates(its, Thresholds(duplicate_method="hash", hash_type="dhash", duplicate_distance=8)))
+        self.assertNotIn(2, find_duplicates(its, Thresholds(duplicate_method="hash", hash_type="dhash", duplicate_distance=7)))
 
     def test_duplicate_scope_author(self):
         its = [item(1, dhash="00" * 8, author="A"), item(2, dhash="00" * 8, author="B")]
-        self.assertIn(2, find_duplicates(its, Thresholds(duplicate_scope="all")))
-        self.assertEqual(find_duplicates(its, Thresholds(duplicate_scope="author")), {})
+        self.assertIn(2, find_duplicates(its, Thresholds(duplicate_method="hash", hash_type="dhash", duplicate_scope="all")))
+        self.assertEqual(find_duplicates(its, Thresholds(duplicate_method="hash", hash_type="dhash", duplicate_scope="author")), {})
 
     def test_duplicate_not_registered(self):
         # 2 — дублікат 1; 3 близьке до 2, але далеке від 1 → не дублікат (як у v2)
         its = [item(1, dhash="0000000000000000"), item(2, dhash="000000000000000f"),
                item(3, dhash="00000000000000ff")]
-        d = find_duplicates(its, Thresholds(duplicate_distance=4))
+        d = find_duplicates(its, Thresholds(duplicate_method="hash", hash_type="dhash", duplicate_distance=4))
         self.assertEqual(set(d), {2})
 
     def test_phash_used_when_selected(self):
         its = [item(1, dhash="00" * 8, phash="ff" * 8), item(2, dhash="ff" * 8, phash="ff" * 8)]
-        self.assertEqual(find_duplicates(its, Thresholds(hash_type="dhash")), {})
-        self.assertIn(2, find_duplicates(its, Thresholds(hash_type="phash")))
+        self.assertEqual(find_duplicates(its, Thresholds(duplicate_method="hash", hash_type="dhash")), {})
+        self.assertIn(2, find_duplicates(its, Thresholds(duplicate_method="hash", hash_type="phash")))
 
     def test_real_hashes_brightness_shift(self):
         a = to_pil(sharp_img())
         b = ImageEnhance.Brightness(a).enhance(1.1)
         hs = [analysis.image_hashes(x)["dhash"] for x in (a, b)]
-        self.assertIn(2, find_duplicates([item(1, dhash=hs[0]), item(2, dhash=hs[1])], Thresholds()))
+        self.assertIn(2, find_duplicates([item(1, dhash=hs[0]), item(2, dhash=hs[1])], HASH))
+
+    def test_feature_pairs_duplicates(self):
+        its = [item(1, author="A"), item(2, author="A"), item(3, author="B")]
+        pairs = [(1, 2, 80), (1, 3, 40), (2, 3, 10)]
+        d = find_duplicates(its, Thresholds(duplicate_inliers=30), pairs)
+        self.assertEqual(d, {2: (1, 80, "points"), 3: (1, 40, "points")})
+        d = find_duplicates(its, Thresholds(duplicate_inliers=50), pairs)
+        self.assertEqual(set(d), {2})
+        d = find_duplicates(its, Thresholds(duplicate_inliers=30, duplicate_scope="author"), pairs)
+        self.assertEqual(set(d), {2})
+        # порядок у парі неважливий: дублікат — пізніше фото
+        self.assertEqual(find_duplicates(its, Thresholds(), [(2, 1, 99)]), {2: (1, 99, "points")})
+
+    def test_identical_phash_always_duplicate(self):
+        its = [item(1, phash="ab" * 8), item(2, phash="ab" * 8)]
+        self.assertIn(2, find_duplicates(its, Thresholds(), []))
+
+    def test_new_reasons(self):
+        t = Thresholds(saturation_enabled=True, highlights_enabled=True)
+        r = evaluate([item(1, horizon_angle=3.0, horizon_conf=2.5, shadows=0.4,
+                           highlights=0.5, sat_clip=0.02)], t)[0]
+        self.assertEqual({x["code"] for x in r["reasons"]},
+                         {"horizon", "shadows", "highlights", "saturation"})
+        # горизонт з низькою впевненістю (макро, ліс) не враховується
+        r = evaluate([item(1, horizon_angle=8.0, horizon_conf=1.2)], t)[0]
+        self.assertEqual(r["verdict"], "ok")
+        r = evaluate([item(1, horizon_angle=1.0, horizon_conf=3)], t)[0]
+        self.assertEqual(r["verdict"], "ok")
+
+    def test_outdated_is_pending(self):
+        self.assertEqual(evaluate([item(1, outdated=True, blur=1)], Thresholds())[0]["verdict"], "pending")
 
     def test_reasons_text_legacy_format(self):
         s = reasons_text([{"code": "blur", "value": 12.5}, {"code": "person", "value": 0.12},
-                          {"code": "duplicate", "value": 3, "of": 1}])
-        self.assertEqual(s, "blur:12.5 | person:12.0% | duplicate:similar(dist=3)")
+                          {"code": "duplicate", "value": 3, "of": 1, "how": "hash"},
+                          {"code": "duplicate", "value": 60, "of": 1, "how": "points"},
+                          {"code": "horizon", "value": 4.5}])
+        self.assertEqual(s, "blur:12.5 | person:12.0% | duplicate:similar(dist=3) | "
+                            "duplicate:points=60 | horizon:4.5°")
 
 
 # ═══ sources ═════════════════════════════════════════════════════════════════
@@ -293,7 +406,7 @@ class TestStoreWorker(unittest.TestCase):
     def run_folder(self, nomination="quality"):
         t = config.load_presets()[nomination]["thresholds"]
         run_id = self.store.create_run("t", nomination, "folder", str(self.photos), t)
-        w = Worker(self.store, yolo_loader=lambda: fake_yolo([]))
+        w = Worker(self.store, yolo_loader=lambda: fake_yolo([]), ocr_loader=None)
         w.start(run_id)
         w.join(run_id, 30)
         return run_id
@@ -340,7 +453,7 @@ class TestStoreWorker(unittest.TestCase):
             time.sleep(0.2)
             return slow.return_value
         slow.side_effect = slow_call
-        w = Worker(self.store, yolo_loader=lambda: slow)
+        w = Worker(self.store, yolo_loader=lambda: slow, ocr_loader=None)
         w.start(run_id)
         time.sleep(0.3)
         w.pause(run_id)
@@ -351,6 +464,38 @@ class TestStoreWorker(unittest.TestCase):
         w.start(run_id)
         w.join(run_id, 10)
         self.assertEqual(self.store.get_run(run_id)["processed"], 5)
+
+    def test_reanalyze_outdated(self):
+        run_id = self.run_folder()
+        self.assertEqual(self.store.reanalyze_all(run_id), 5)
+        run = self.store.get_run(run_id)
+        self.assertEqual((run["outdated"], run["processed"]), (5, 0))
+        self.assertEqual(len(self.store.pending_images(run_id)), 5)
+        w = Worker(self.store, yolo_loader=lambda: fake_yolo([]), ocr_loader=None)
+        w.start(run_id)
+        w.join(run_id, 30)
+        self.assertEqual(self.store.get_run(run_id)["processed"], 5)
+
+    def test_sift_saved_and_pairs_found(self):
+        run_id = self.run_folder()
+        imgs = {i["key"]: i for i in self.store.images(run_id)}
+        self.assertTrue(all((self.store.cache_dir / str(run_id) / f"{i['id']}.sift.npz").exists()
+                            for i in imgs.values()))
+        pairs = {(a, b) for a, b, _ in self.store.pairs(run_id)}
+        a, b = imgs["A/1.jpg"]["id"], imgs["A/1_copy.jpg"]["id"]
+        self.assertTrue((a, b) in pairs or (b, a) in pairs)
+
+    def test_migration_adds_columns(self):
+        import sqlite3
+        p = Path(self.tmp.name) / "old.sqlite3"
+        con = sqlite3.connect(p)
+        con.executescript("CREATE TABLE images (id INTEGER PRIMARY KEY, run_id INTEGER, seq INTEGER, key TEXT,"
+                          " title TEXT, status TEXT DEFAULT 'done', persons TEXT);"
+                          "INSERT INTO images(run_id, seq, key, title) VALUES (1, 0, 'a', 'a');")
+        con.close()
+        st = Store(p)
+        self.assertTrue(st.images(1)[0]["outdated"])
+        st.close()
 
     def test_manual_decision(self):
         run_id = self.run_folder()
@@ -397,7 +542,7 @@ class TestAPI(unittest.TestCase):
         cls.photos = Path(cls.tmp.name) / "photos"
         make_folder(cls.photos)
         cls.store = Store(Path(cls.tmp.name) / "db.sqlite3")
-        cls.worker = Worker(cls.store, yolo_loader=lambda: fake_yolo([]))
+        cls.worker = Worker(cls.store, yolo_loader=lambda: fake_yolo([]), ocr_loader=None)
         cls.client = TestClient(create_app(cls.store, cls.worker))
 
     @classmethod

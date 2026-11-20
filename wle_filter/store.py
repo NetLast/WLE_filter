@@ -7,6 +7,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .analysis import METRICS_VERSION
 from .config import DATA_DIR
 
 SCHEMA = """
@@ -50,7 +51,23 @@ CREATE TABLE IF NOT EXISTS images (
     UNIQUE(run_id, key)
 );
 CREATE INDEX IF NOT EXISTS idx_images_run ON images(run_id, seq);
+CREATE TABLE IF NOT EXISTS pairs (
+    run_id  INTEGER NOT NULL,
+    a       INTEGER NOT NULL,           -- раніше завантажене фото
+    b       INTEGER NOT NULL,           -- пізніше завантажене фото
+    inliers INTEGER NOT NULL,           -- спільні ключові точки (SIFT + RANSAC)
+    PRIMARY KEY (a, b)
+);
+CREATE INDEX IF NOT EXISTS idx_pairs_run ON pairs(run_id);
 """
+
+# Колонки, додані у v3.1 (міграція наявних баз)
+NEW_COLUMNS = {
+    "blur_global": "REAL", "text": "TEXT", "text_boxes": "TEXT",
+    "horizon_angle": "REAL", "horizon_conf": "REAL", "horizon_row": "REAL",
+    "shadows": "REAL", "highlights": "REAL", "sat_clip": "REAL",
+    "embed": "BLOB", "mver": "INTEGER NOT NULL DEFAULT 0",
+}
 
 RUN_FIELDS = ("id", "name", "nomination", "source_type", "source", "status",
               "message", "thresholds", "created_at", "updated_at")
@@ -70,6 +87,10 @@ class Store:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(SCHEMA)
+        have = {r[1] for r in self._conn.execute("PRAGMA table_info(images)")}
+        for col, typ in NEW_COLUMNS.items():
+            if col not in have:
+                self._conn.execute(f"ALTER TABLE images ADD COLUMN {col} {typ}")
         self._conn.commit()
 
     @property
@@ -116,11 +137,13 @@ class Store:
         return runs
 
     def run_counts(self, run_id: int) -> dict:
-        rows = self._all("SELECT status, COUNT(*) n FROM images WHERE run_id=? GROUP BY status", (run_id,))
-        c = {r["status"]: r["n"] for r in rows}
+        rows = self._all(
+            "SELECT CASE WHEN status='done' AND mver<? THEN 'outdated' ELSE status END st, COUNT(*) n"
+            " FROM images WHERE run_id=? GROUP BY st", (METRICS_VERSION, run_id))
+        c = {r["st"]: r["n"] for r in rows}
         total = sum(c.values())
         return {"total": total, "processed": c.get("done", 0) + c.get("error", 0),
-                "errors": c.get("error", 0)}
+                "errors": c.get("error", 0), "outdated": c.get("outdated", 0)}
 
     def set_run_status(self, run_id: int, status: str, message: str | None = None):
         self._exec("UPDATE runs SET status=?, message=?, updated_at=? WHERE id=?",
@@ -134,6 +157,7 @@ class Store:
         self._exec("UPDATE runs SET name=?, updated_at=? WHERE id=?", (name, now(), run_id))
 
     def delete_run(self, run_id: int):
+        self._exec("DELETE FROM pairs WHERE run_id=?", (run_id,))
         self._exec("DELETE FROM images WHERE run_id=?", (run_id,))
         self._exec("DELETE FROM runs WHERE id=?", (run_id,))
 
@@ -158,12 +182,48 @@ class Store:
         return added
 
     def pending_images(self, run_id: int) -> list[dict]:
-        return self._all("SELECT * FROM images WHERE run_id=? AND status='pending' ORDER BY seq", (run_id,))
+        """Фото, які треба (пере)аналізувати: нові та з застарілою версією метрик."""
+        return self._all("SELECT * FROM images WHERE run_id=? AND"
+                         " (status='pending' OR (status='done' AND mver<?)) ORDER BY seq",
+                         (run_id, METRICS_VERSION))
 
     def save_metrics(self, image_id: int, m: dict):
-        self._exec("UPDATE images SET status='done', error=NULL, blur=?, sign=?, dhash=?, phash=?,"
-                   " persons=? WHERE id=?",
-                   (m["blur"], m["sign"], m["dhash"], m["phash"], json.dumps(m["persons"]), image_id))
+        emb = m.get("_embed")
+        self._exec(
+            "UPDATE images SET status='done', error=NULL, blur=?, blur_global=?, sign=?, text=?,"
+            " text_boxes=?, dhash=?, phash=?, persons=?, horizon_angle=?, horizon_conf=?, horizon_row=?,"
+            " shadows=?, highlights=?, sat_clip=?, embed=?, mver=? WHERE id=?",
+            (m["blur"], m.get("blur_global"), m["sign"], m.get("text") or None,
+             json.dumps(m.get("text_boxes") or []), m["dhash"], m["phash"], json.dumps(m["persons"]),
+             m.get("horizon_angle"), m.get("horizon_conf"), m.get("horizon_row"),
+             m.get("shadows"), m.get("highlights"), m.get("sat_clip"),
+             emb.tobytes() if emb is not None else None, METRICS_VERSION, image_id))
+
+    def embeddings(self, run_id: int) -> list[tuple[int, str | None, bytes]]:
+        """(id, author, embed|None) уже проаналізованих фото поточної версії, за порядком seq."""
+        with self._lock:
+            return [tuple(r) for r in self._conn.execute(
+                "SELECT id, author, embed FROM images WHERE run_id=? AND status='done' AND mver=?"
+                " ORDER BY seq", (run_id, METRICS_VERSION))]
+
+    def save_pairs(self, run_id: int, pairs: list[tuple[int, int, int]]):
+        with self._lock:
+            self._conn.executemany("INSERT OR REPLACE INTO pairs(run_id, a, b, inliers) VALUES (?,?,?,?)",
+                                   [(run_id, a, b, n) for a, b, n in pairs])
+            self._conn.commit()
+
+    def clear_pairs_for(self, image_id: int):
+        self._exec("DELETE FROM pairs WHERE a=? OR b=?", (image_id, image_id))
+
+    def pairs(self, run_id: int) -> list[tuple[int, int, int]]:
+        with self._lock:
+            return [tuple(r) for r in self._conn.execute(
+                "SELECT a, b, inliers FROM pairs WHERE run_id=?", (run_id,))]
+
+    def reanalyze_all(self, run_id: int) -> int:
+        """Позначає всі фото прогону для повторного аналізу (кеш мініатюр зберігається)."""
+        self._exec("DELETE FROM pairs WHERE run_id=?", (run_id,))
+        return self._exec("UPDATE images SET mver=0 WHERE run_id=? AND status='done'", (run_id,)).rowcount
 
     def save_error(self, image_id: int, error: str):
         self._exec("UPDATE images SET status='error', error=? WHERE id=?", (error[:200], image_id))
@@ -175,16 +235,23 @@ class Store:
     def images(self, run_id: int) -> list[dict]:
         rows = self._all("SELECT * FROM images WHERE run_id=? ORDER BY seq", (run_id,))
         for r in rows:
-            r["persons"] = json.loads(r["persons"]) if r["persons"] else []
+            self._decode(r)
         return rows
+
+    @staticmethod
+    def _decode(r: dict) -> dict:
+        r["persons"] = json.loads(r["persons"]) if r.get("persons") else []
+        r["text_boxes"] = json.loads(r["text_boxes"]) if r.get("text_boxes") else []
+        r.pop("embed", None)
+        if r.get("status") == "done" and (r.get("mver") or 0) < METRICS_VERSION:
+            r["outdated"] = True
+        return r
 
     def image(self, image_id: int) -> dict | None:
         rows = self._all("SELECT * FROM images WHERE id=?", (image_id,))
         if not rows:
             return None
-        r = rows[0]
-        r["persons"] = json.loads(r["persons"]) if r["persons"] else []
-        return r
+        return self._decode(rows[0])
 
     def set_manual(self, image_id: int, decision: str | None, note: str | None = None):
         self._exec("UPDATE images SET manual=?, note=COALESCE(?, note), reviewed_at=? WHERE id=?",
