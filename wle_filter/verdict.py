@@ -16,10 +16,18 @@ REASON_LABELS = {
     "blur": "Розмите",
     "person": "Людина в кадрі",
     "sign": "Табличка / текст",
+    "horizon": "Завалений горизонт",
+    "shadows": "Глибокі тіні",
+    "highlights": "Пересвіт",
+    "saturation": "Перенасичені кольори",
     "duplicate": "Дублікат",
     "mpx": "Мала роздільність",
     "error": "Помилка",
 }
+
+# Практично ідентичні кадри (pHash) вважаються дублікатами завжди,
+# навіть якщо на фото замало ключових точок для SIFT (туман, вода, небо)
+EXACT_HASH_DISTANCE = 4
 
 
 def person_area(persons: list[dict] | None, min_conf: float) -> float:
@@ -47,6 +55,21 @@ def item_reasons(item: dict, t: Thresholds) -> list[dict]:
     if t.sign_enabled and sign is not None and sign >= t.sign_coverage:
         reasons.append({"code": "sign", "value": sign})
 
+    if t.horizon_enabled and item.get("horizon_angle") is not None:
+        ang, conf = float(item["horizon_angle"]), float(item.get("horizon_conf") or 0)
+        if conf >= t.horizon_conf and abs(ang) >= t.horizon_angle:
+            reasons.append({"code": "horizon", "value": round(ang, 1)})
+
+    sh = item.get("shadows")
+    if t.shadows_enabled and sh is not None and sh >= t.shadows_max:
+        reasons.append({"code": "shadows", "value": sh})
+    hi = item.get("highlights")
+    if t.highlights_enabled and hi is not None and hi >= t.highlights_max:
+        reasons.append({"code": "highlights", "value": hi})
+    sc = item.get("sat_clip")
+    if t.saturation_enabled and sc is not None and sc >= t.saturation_clip:
+        reasons.append({"code": "saturation", "value": sc})
+
     if t.min_mpx_enabled:
         w, h = item.get("width") or 0, item.get("height") or 0
         if w and h:
@@ -65,25 +88,49 @@ def _hash_to_int(h: str | None) -> int | None:
         return None
 
 
-def find_duplicates(items: list[dict], t: Thresholds) -> dict[int, tuple[int, int]]:
-    """Знаходить дублікати.
+def find_duplicates(items: list[dict], t: Thresholds,
+                    pairs: list[tuple[int, int, int]] | None = None) -> dict[int, tuple[int, int, str]]:
+    """Знаходить дублікати. items — у хронологічному порядку (ранні — «оригінали»).
 
-    items мають бути впорядковані за часом (ранніші — «оригінали»).
-    Як і в оригінальному скрипті, кожне фото порівнюється лише з уже
-    зареєстрованими оригіналами; дублікат до реєстру не додається.
-    Повертає {id_дубліката: (id_оригіналу, відстань)}.
+    method="features": пари зі спільними ключовими точками (SIFT + RANSAC),
+        порахованими під час аналізу; дублікат — пізніше фото пари з
+        кількістю точок ≥ duplicate_inliers. Ловить той самий кадр з іншим
+        кадруванням, експозицією, поворотом чи орієнтацією.
+    method="hash": як у v2 — відстань Геммінга між хешами ≤ duplicate_distance.
+    В обох режимах майже ідентичні кадри (pHash ≤ 4) — дублікати завжди.
+
+    Повертає {id_дубліката: (id_оригіналу, значення, метод)}.
     """
+    done = {it["id"]: it for it in items if it.get("status") == "done" and not it.get("outdated")}
+    order = {it["id"]: i for i, it in enumerate(items)}
+
+    def same_scope(a: dict, b: dict) -> bool:
+        return t.duplicate_scope != "author" or ((a.get("author") or "") == (b.get("author") or ""))
+
+    result: dict[int, tuple[int, int, str]] = {}
+    if t.duplicate_method == "features" and pairs:
+        for a, b, n in pairs:
+            if n < t.duplicate_inliers or a not in done or b not in done:
+                continue
+            if order[a] > order[b]:
+                a, b = b, a
+            if not same_scope(done[a], done[b]):
+                continue
+            if b not in result or result[b][1] < n:
+                result[b] = (a, int(n), "points")
+
+    # Хеші: режим «hash» або завжди — практично ідентичні кадри
+    limit = t.duplicate_distance if t.duplicate_method == "hash" else EXACT_HASH_DISTANCE
+    htype = t.hash_type if t.duplicate_method == "hash" else "phash"
     groups: dict[str, list[tuple[int, int]]] = defaultdict(list)
     for it in items:
-        if it.get("status") != "done":
+        if it["id"] not in done:
             continue
-        hv = _hash_to_int(it.get(t.hash_type))
+        hv = _hash_to_int(it.get(htype))
         if hv is None:
             continue
         key = (it.get("author") or "") if t.duplicate_scope == "author" else ""
         groups[key].append((it["id"], hv))
-
-    result: dict[int, tuple[int, int]] = {}
     for members in groups.values():
         if len(members) < 2:
             continue
@@ -94,8 +141,9 @@ def find_duplicates(items: list[dict], t: Thresholds) -> dict[int, tuple[int, in
             if n:
                 dist = np.bitwise_count(reg_hash[:n] ^ np.uint64(hv))
                 j = int(np.argmin(dist))
-                if int(dist[j]) <= t.duplicate_distance:
-                    result[img_id] = (int(reg_ids[j]), int(dist[j]))
+                if int(dist[j]) <= limit:
+                    if img_id not in result:
+                        result[img_id] = (int(reg_ids[j]), int(dist[j]), "hash")
                     continue
             reg_ids[n] = img_id
             reg_hash[n] = hv
@@ -103,26 +151,27 @@ def find_duplicates(items: list[dict], t: Thresholds) -> dict[int, tuple[int, in
     return result
 
 
-def evaluate(items: Iterable[dict], t: Thresholds) -> list[dict]:
+def evaluate(items: Iterable[dict], t: Thresholds,
+             pairs: list[tuple[int, int, int]] | None = None) -> list[dict]:
     """Повертає для кожного фото: auto_verdict, verdict (з урахуванням ручного), reasons.
 
     items: словники з полями id, status, blur, persons, sign, dhash, phash,
     width, height, author, manual. Порядок = хронологічний.
     """
     items = list(items)
-    dups = find_duplicates(items, t) if t.duplicate_enabled else {}
+    dups = find_duplicates(items, t, pairs) if t.duplicate_enabled else {}
     out = []
     for it in items:
         if it.get("status") == "error":
             reasons = [{"code": "error", "value": it.get("error") or ""}]
             auto = "error"
-        elif it.get("status") != "done":
+        elif it.get("status") != "done" or it.get("outdated"):
             reasons, auto = [], "pending"
         else:
             reasons = item_reasons(it, t)
             if it["id"] in dups:
-                orig, dist = dups[it["id"]]
-                reasons.append({"code": "duplicate", "value": dist, "of": orig})
+                orig, val, how = dups[it["id"]]
+                reasons.append({"code": "duplicate", "value": val, "of": orig, "how": how})
             auto = "flagged" if reasons else "ok"
 
         manual = it.get("manual")
@@ -148,10 +197,12 @@ def reasons_text(reasons: list[dict]) -> str:
     parts = []
     for r in reasons:
         c, v = r["code"], r.get("value")
-        if c in ("person", "sign"):
+        if c in ("person", "sign", "shadows", "highlights", "saturation"):
             parts.append(f"{c}:{float(v):.1%}")
+        elif c == "horizon":
+            parts.append(f"horizon:{v}°")
         elif c == "duplicate":
-            parts.append(f"duplicate:similar(dist={v})")
+            parts.append(f"duplicate:points={v}" if r.get("how") == "points" else f"duplicate:similar(dist={v})")
         else:
             parts.append(f"{c}:{v}")
     return " | ".join(parts)
