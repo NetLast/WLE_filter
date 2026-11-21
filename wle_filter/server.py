@@ -202,40 +202,42 @@ def create_app(store: Store | None = None, worker: Worker | None = None) -> Fast
             raise HTTPException(400, f"Невідома номінація: {body.nomination}")
         if preset.get("campaign", config.DEFAULT_CAMPAIGN) != body.campaign:
             raise HTTPException(400, "Пресет не належить до цього режиму")
-        source, options = body.source.strip(), {}
+        source, options, rows = body.source.strip(), {}, None
+        if body.campaign == "wlm" and body.source_type == "commons":
+            raise HTTPException(400, "У режимі WLM джерело — CSV-файл або локальна папка")
+        if body.source_type == "csv" and body.campaign != "wlm":
+            raise HTTPException(400, "CSV-джерело доступне лише в режимі WLM")
+        text = None
+        if body.csv_text:
+            text = body.csv_text
+        elif body.csv_path:
+            p = Path(body.csv_path).expanduser()
+            if not p.is_file():
+                raise HTTPException(400, f"Файл не знайдено: {body.csv_path}")
+            text = p.read_text(encoding="utf-8-sig")
+            source = source or p.name
         if body.source_type == "csv":
-            if body.campaign != "wlm":
-                raise HTTPException(400, "CSV-джерело доступне лише в режимі WLM")
-            from .sources import parse_wlm_csv
-            if body.csv_text:
-                text = body.csv_text
-            elif body.csv_path:
-                p = Path(body.csv_path).expanduser()
-                if not p.is_file():
-                    raise HTTPException(400, f"Файл не знайдено: {body.csv_path}")
-                text = p.read_text(encoding="utf-8-sig")
-                source = source or p.name
-            else:
+            if text is None:
                 raise HTTPException(400, "Оберіть CSV-файл")
+            source = source or "wlm.csv"
+        else:
+            if not source:
+                raise HTTPException(400, "Вкажіть категорію або папку")
+            if body.source_type == "folder" and not Path(source).expanduser().is_dir():
+                raise HTTPException(400, f"Папку не знайдено: {source}")
+        if text is not None and body.campaign == "wlm":
+            from .sources import parse_wlm_csv
             try:
                 rows = parse_wlm_csv(text, body.oblast)
             except ValueError as e:
                 raise HTTPException(400, str(e))
             if not rows:
                 raise HTTPException(400, "У CSV немає рядків" + (f" з monument_id «{body.oblast}-…»" if body.oblast.strip() else ""))
-            source = source or "wlm.csv"
-        else:
-            if body.campaign == "wlm":
-                raise HTTPException(400, "У режимі WLM джерело — CSV-файл")
-            if not source:
-                raise HTTPException(400, "Вкажіть категорію або папку")
-            if body.source_type == "folder" and not Path(source).expanduser().is_dir():
-                raise HTTPException(400, f"Папку не знайдено: {source}")
-        scope = f"{source}" + (f" · область {body.oblast.strip()}" if body.source_type == "csv" and body.oblast.strip() else "")
+        scope = f"{source}" + (f" · область {body.oblast.strip()}" if rows is not None and body.oblast.strip() else "")
         name = body.name.strip() or f"{preset['label']}: {scope}"
         run_id = store.create_run(name, body.nomination, body.source_type, source,
                                   preset["thresholds"], campaign=body.campaign, options=options)
-        if body.source_type == "csv":
+        if rows is not None:
             # зберігаємо вже відфільтрований список, щоб прогін не залежав від вихідного файлу
             up = store.path.parent / "uploads"
             up.mkdir(parents=True, exist_ok=True)

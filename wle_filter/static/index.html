@@ -358,12 +358,13 @@ dialog.wle-dialog .cdx-dialog__header,dialog.wle-dialog .cdx-dialog__footer{flex
         <div class="cdx-label"><span class="cdx-label__label"><span class="cdx-label__label__text">Джерело фото</span></span></div>
         <div class="cdx-toggle-button-group" id="srcSeg">
           <button type="button" data-src="commons" class="cdx-toggle-button cdx-toggle-button--framed cdx-toggle-button--toggled-on" aria-pressed="true">Категорія Commons</button>
+          <button type="button" data-src="csv" class="cdx-toggle-button cdx-toggle-button--framed" aria-pressed="false">CSV (з Commons)</button>
           <button type="button" data-src="folder" class="cdx-toggle-button cdx-toggle-button--framed" aria-pressed="false">Локальна папка</button>
         </div>
       </div>
       <div class="cdx-field" id="csvField" hidden>
-        <label class="cdx-label" for="csvFile"><span class="cdx-label__label"><span class="cdx-label__label__text">CSV-файл зі списком фото</span></span>
-          <span class="cdx-label__description">Колонки: <code>title</code>, <code>monument_id</code>, <code>categories</code>. Файл читається в браузері й копіюється в теку даних.</span></label>
+        <label class="cdx-label" for="csvFile"><span class="cdx-label__label"><span class="cdx-label__label__text" id="csvLabel">CSV-файл зі списком фото</span></span>
+          <span class="cdx-label__description" id="csvDesc"></span></label>
         <input type="file" id="csvFile" accept=".csv,text/csv,text/plain">
         <div class="field-row" style="margin-top:8px">
           <div class="cdx-field">
@@ -568,6 +569,7 @@ function renderRunHeader() {
   const busy = r.active || r.status === "running" || r.status === "listing";
   let msg = `${fmtInt(r.processed)} / ${fmtInt(r.total)} оброблено · ${STATUS[r.status] || r.status}`;
   if (r.outdated && !busy) msg += ` · ${fmtInt(r.outdated)} фото потребують повторного аналізу вихідними фільтрами — натисніть «Продовжити»`;
+  if (r.options?.missing) msg += ` · ${fmtInt(r.options.missing)} рядків CSV без файлу в папці`;
   if (r.message) msg += ` · ${r.message}`;
   $("#runMsg").textContent = msg;
   $("#runMsg").title = msg;
@@ -1212,12 +1214,12 @@ async function openNewRun() {
   if (!pr[newNom]) newNom = Object.keys(pr)[0];
   $("#nomSeg").innerHTML = Object.entries(pr).map(([k, p]) => toggleBtn(esc(p.label), k === newNom, `data-nom="${k}"`)).join("");
   $("#nomField").hidden = Object.keys(pr).length < 2;
-  $("#srcField").hidden = wlm;                        // WLM: джерело лише CSV
-  newSrc = wlm ? "csv" : (newSrc === "csv" ? "commons" : newSrc);
-  setPressed($("#srcSeg"), "src", newSrc);
-  $("#csvField").hidden = !wlm;
-  $("#commonsField").hidden = wlm || newSrc !== "commons";
-  $("#folderField").hidden = wlm || newSrc !== "folder";
+  // WLM: CSV (з Commons) або локальна папка; WLE: категорія Commons або папка
+  $('#srcSeg [data-src="commons"]').hidden = wlm;
+  $('#srcSeg [data-src="csv"]').hidden = !wlm;
+  if (wlm && newSrc === "commons") newSrc = "csv";
+  if (!wlm && newSrc === "csv") newSrc = "commons";
+  applySrc();
   try { $("#oblastInput").value = localStorage.getItem("wlm-oblast") ?? "63"; } catch {}
   showNewRunErr("");
   setNom(newNom);
@@ -1237,11 +1239,22 @@ function setNom(k) {
 }
 $("#nomSeg").addEventListener("click", e => { const b = e.target.closest("[data-nom]"); if (b) setNom(b.dataset.nom); });
 $("#catInput").addEventListener("input", e => e.target.dataset.touched = "1");
+function applySrc() {
+  const wlm = S.campaign === "wlm";
+  setPressed($("#srcSeg"), "src", newSrc);
+  $("#commonsField").hidden = newSrc !== "commons";
+  $("#folderField").hidden = newSrc !== "folder";
+  $("#csvField").hidden = !(wlm && (newSrc === "csv" || newSrc === "folder"));
+  const folder = newSrc === "folder";
+  $("#csvLabel").textContent = folder ? "CSV-файл (необов'язково)" : "CSV-файл зі списком фото";
+  $("#csvDesc").textContent = folder
+    ? "Щоб знати код пам'ятки й категорії (чорний список, роки, дублі за пам'яткою): файли папки зіставляються з рядками CSV за назвою, у прогін потрапляють лише знайдені. Без CSV перевіряються всі фото папки."
+    : "Колонки: title, monument_id, categories. Файл читається в браузері й копіюється в теку даних.";
+  if (folder && !$("#fsList").innerHTML) browse($("#folderInput").value || "~");
+}
 $("#srcSeg").addEventListener("click", e => {
   const b = e.target.closest("[data-src]"); if (!b) return;
-  newSrc = b.dataset.src;
-  setPressed($("#srcSeg"), "src", newSrc);
-  $("#commonsField").hidden = newSrc !== "commons"; $("#folderField").hidden = newSrc !== "folder";
+  newSrc = b.dataset.src; applySrc();
   if (newSrc === "folder") browse($("#folderInput").value || "~");
 });
 async function browse(path) {
@@ -1264,13 +1277,16 @@ $("#newRunForm").addEventListener("submit", async e => {
   $("#createRunBtn").disabled = true;
   try {
     const body = {name: $("#nameInput").value, campaign: S.campaign, nomination: newNom, source_type: newSrc, limit};
+    const f = $("#csvFile").files[0];
     if (newSrc === "csv") {
-      const f = $("#csvFile").files[0];
       if (!f) throw new Error("Оберіть CSV-файл");
-      body.csv_text = await f.text(); body.source = f.name;
+      body.source = f.name;
+    } else body.source = newSrc === "commons" ? $("#catInput").value.trim() : $("#folderInput").value.trim();
+    if (S.campaign === "wlm" && f) {
+      body.csv_text = await f.text();
       body.oblast = $("#oblastInput").value.trim();
       try { localStorage.setItem("wlm-oblast", body.oblast); } catch {}
-    } else body.source = newSrc === "commons" ? $("#catInput").value.trim() : $("#folderInput").value.trim();
+    }
     const run = await api("/api/runs", {method:"POST", body});
     $("#newRunDlg").close();
     $("#nameInput").value = ""; $("#limitInput").value = "";

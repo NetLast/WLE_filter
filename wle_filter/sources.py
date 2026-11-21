@@ -181,6 +181,38 @@ def list_wlm_csv(csv_path: str, oblast: str = "", limit: int | None = None,
     return out
 
 
+def _name_key(name: str) -> str:
+    """Ключ порівняння назви файлу: без «File:»/«File_», підкреслення = пробіли, без регістру."""
+    n = name.replace("_", " ").strip().lower()
+    for pre in ("file:", "file "):
+        if n.startswith(pre):
+            n = n[len(pre):].strip()
+    return n
+
+
+def list_wlm_folder(folder: str, csv_path: str | None = None, oblast: str = "",
+                    limit: int | None = None) -> tuple[list[dict], int]:
+    """Локальна папка для WLM. Якщо є CSV — файли зіставляються з рядками за назвою
+    (monument_id, категорії), а в прогін потрапляють лише знайдені; повертає (кандидати, не знайдено).
+    Без CSV беруться всі фото папки."""
+    local = list_local_folder(folder)
+    if not csv_path:
+        return (local[:limit] if limit else local), 0
+    rows = parse_wlm_csv(Path(csv_path).read_text(encoding="utf-8-sig"), oblast)
+    by_name = {}
+    for c in local:
+        by_name.setdefault(_name_key(c["title"]), c)
+    out, missing = [], 0
+    for r in rows:
+        c = by_name.get(_name_key(r["title"]))
+        if not c:
+            missing += 1
+            continue
+        out.append({**c, "key": r["title"], "title": r["title"], "page_url": commons_page_url(r["title"]),
+                    "monument_id": r["monument_id"], "categories": r["categories"]})
+    return (out[:limit] if limit else out), missing
+
+
 def download(url: str, dest: Path, session: requests.Session | None = None) -> None:
     """Завантажує мініатюру з повторами при 429 (як у старому main.py)."""
     session = session or requests.Session()

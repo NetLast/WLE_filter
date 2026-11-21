@@ -812,5 +812,41 @@ class TestCampaigns(unittest.TestCase):
         store.close(); tmp.cleanup()
 
 
+    def test_wlm_folder_with_and_without_csv(self):
+        from fastapi.testclient import TestClient
+        from wle_filter.server import create_app
+        tmp = tempfile.TemporaryDirectory()
+        photos = Path(tmp.name) / "images"
+        photos.mkdir()
+        # імена файлів, як їх зберігав скрипт WLM: «File:» → «File_», пробіли → «_»
+        noise_pil(1).save(photos / "File_1.jpg")
+        noise_pil(2).save(photos / "File_1_copy.jpg")
+        noise_pil(3).save(photos / "unrelated.jpg")
+        store = Store(Path(tmp.name) / "db.sqlite3")
+        worker = Worker(store, yolo_loader=lambda: fake_yolo([]), ocr_loader=None)
+        client = TestClient(create_app(store, worker))
+        base = {"campaign": "wlm", "nomination": "wlm", "source_type": "folder", "source": str(photos)}
+
+        r = client.post("/api/runs", json={**base, "csv_text": self.CSV, "oblast": "63"})
+        self.assertEqual(r.status_code, 201, r.text)
+        rid = r.json()["id"]
+        worker.join(rid, 30)
+        run = client.get(f"/api/runs/{rid}").json()
+        self.assertEqual(run["total"], 2)                     # 1.jpg і «1 copy.jpg»; ще 2 рядки без файлів
+        self.assertEqual(run["options"]["missing"], 2)
+        titles = {i["title"]: i for i in client.post(f"/api/runs/{rid}/results",
+                  json={"view": "all"}).json()["items"]}
+        self.assertEqual(titles["File:1.jpg"]["monument_id"], "63-101-0001")
+        self.assertEqual(titles["File:1 copy.jpg"]["reasons"][0]["code"], "blacklist")
+
+        r = client.post("/api/runs", json=base)                # без CSV — усі фото папки
+        rid2 = r.json()["id"]
+        worker.join(rid2, 30)
+        self.assertEqual(client.get(f"/api/runs/{rid2}").json()["total"], 3)
+        self.assertEqual(client.post("/api/runs", json={**base, "source_type": "commons",
+                                                         "source": "Cat"}).status_code, 400)
+        store.close(); tmp.cleanup()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

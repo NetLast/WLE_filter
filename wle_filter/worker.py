@@ -59,7 +59,13 @@ class Worker:
         try:
             if run["total"] == 0:
                 store.set_run_status(run_id, "listing", "Отримую список фото…")
-                if run["source_type"] == "csv":
+                if run["source_type"] == "folder" and run.get("campaign") == "wlm":
+                    opts = run.get("options") or {}
+                    cands, missing = sources.list_wlm_folder(
+                        run["source"], opts.get("csv_path"), opts.get("oblast", ""), limit=limit)
+                    if missing:
+                        store.set_run_options(run_id, {**opts, "missing": missing})
+                elif run["source_type"] == "csv":
                     opts = run.get("options") or {}
                     cands = sources.list_wlm_csv(
                         opts["csv_path"], opts.get("oblast", ""), limit=limit,
