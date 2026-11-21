@@ -358,15 +358,16 @@ dialog.wle-dialog .cdx-dialog__header,dialog.wle-dialog .cdx-dialog__footer{flex
         <div class="cdx-label"><span class="cdx-label__label"><span class="cdx-label__label__text">Джерело фото</span></span></div>
         <div class="cdx-toggle-button-group" id="srcSeg">
           <button type="button" data-src="commons" class="cdx-toggle-button cdx-toggle-button--framed cdx-toggle-button--toggled-on" aria-pressed="true">Категорія Commons</button>
+          <button type="button" data-src="csv" class="cdx-toggle-button cdx-toggle-button--framed" aria-pressed="false">CSV (з Commons)</button>
           <button type="button" data-src="folder" class="cdx-toggle-button cdx-toggle-button--framed" aria-pressed="false">Локальна папка</button>
         </div>
       </div>
       <div class="cdx-field" id="csvField" hidden>
-        <label class="cdx-label" for="csvFile"><span class="cdx-label__label"><span class="cdx-label__label__text">CSV-файл зі списком фото</span></span>
-          <span class="cdx-label__description">Колонки: <code>title</code>, <code>monument_id</code>, <code>categories</code>. Файл читається в браузері й копіюється в теку даних.</span></label>
-        <input type="file" id="csvFile" accept=".csv,text/csv,text/plain">
+        <label class="cdx-label" for="csvFile"><span class="cdx-label__label"><span class="cdx-label__label__text" id="csvLabel">CSV-файл зі списком фото</span></span>
+          <span class="cdx-label__description" id="csvDesc"></span></label>
+        <input type="file" id="csvFile" accept=".csv,.json,.txt,text/csv,application/json,text/plain">
         <div class="field-row" style="margin-top:8px">
-          <div class="cdx-field">
+          <div class="cdx-field" id="oblastWrap">
             <label class="cdx-label" for="oblastInput"><span class="cdx-label__label"><span class="cdx-label__label__text">Код області</span>
               <span class="cdx-label__label__optional-flag"> (початок monument_id)</span></span></label>
             <div class="cdx-text-input"><input class="cdx-text-input__input" type="text" id="oblastInput" placeholder="63 — усі області, якщо порожньо"></div>
@@ -568,6 +569,7 @@ function renderRunHeader() {
   const busy = r.active || r.status === "running" || r.status === "listing";
   let msg = `${fmtInt(r.processed)} / ${fmtInt(r.total)} оброблено · ${STATUS[r.status] || r.status}`;
   if (r.outdated && !busy) msg += ` · ${fmtInt(r.outdated)} фото потребують повторного аналізу вихідними фільтрами — натисніть «Продовжити»`;
+  if (r.options?.missing) msg += ` · ${fmtInt(r.options.missing)} рядків CSV без файлу в папці`;
   if (r.message) msg += ` · ${r.message}`;
   $("#runMsg").textContent = msg;
   $("#runMsg").title = msg;
@@ -1212,12 +1214,10 @@ async function openNewRun() {
   if (!pr[newNom]) newNom = Object.keys(pr)[0];
   $("#nomSeg").innerHTML = Object.entries(pr).map(([k, p]) => toggleBtn(esc(p.label), k === newNom, `data-nom="${k}"`)).join("");
   $("#nomField").hidden = Object.keys(pr).length < 2;
-  $("#srcField").hidden = wlm;                        // WLM: джерело лише CSV
-  newSrc = wlm ? "csv" : (newSrc === "csv" ? "commons" : newSrc);
-  setPressed($("#srcSeg"), "src", newSrc);
-  $("#csvField").hidden = !wlm;
-  $("#commonsField").hidden = wlm || newSrc !== "commons";
-  $("#folderField").hidden = wlm || newSrc !== "folder";
+  // WLM: CSV (з Commons) або локальна папка; WLE: категорія Commons або папка
+  $('#srcSeg [data-src="csv"]').hidden = !wlm;
+  if (!wlm && newSrc === "csv") newSrc = "commons";
+  applySrc();
   try { $("#oblastInput").value = localStorage.getItem("wlm-oblast") ?? "63"; } catch {}
   showNewRunErr("");
   setNom(newNom);
@@ -1237,11 +1237,24 @@ function setNom(k) {
 }
 $("#nomSeg").addEventListener("click", e => { const b = e.target.closest("[data-nom]"); if (b) setNom(b.dataset.nom); });
 $("#catInput").addEventListener("input", e => e.target.dataset.touched = "1");
+function applySrc() {
+  const wlm = S.campaign === "wlm";
+  setPressed($("#srcSeg"), "src", newSrc);
+  $("#commonsField").hidden = newSrc !== "commons";
+  $("#folderField").hidden = newSrc !== "folder";
+  $("#csvField").hidden = !wlm;
+  $("#oblastWrap").hidden = newSrc === "commons";
+  $("#csvLabel").textContent = newSrc === "csv" ? "Файл зі списком фото (CSV / JSON)" : "Файл зі списком пам'яток (необов'язково)";
+  $("#csvDesc").textContent = newSrc === "csv"
+    ? "CSV (колонки title, monument_id, categories) або JSON ([{\"title\":…, \"monument_id\":…}] чи {\"назва файлу\": \"monument_id\"}). Файл читається в браузері й копіюється в теку даних."
+    : newSrc === "folder"
+      ? "CSV або JSON зі списком (title, monument_id, categories): файли папки зіставляються з рядками за назвою, у прогін потрапляють лише знайдені. Без файлу перевіряються всі фото папки."
+      : "CSV або JSON зі списком (title, monument_id, categories): додає код пам'ятки до фото категорії за назвою. Без файлу беруться лише категорії самих файлів на Commons (чорний список працює, дублі — серед усіх фото).";
+  if (newSrc === "folder" && !$("#fsList").innerHTML) browse($("#folderInput").value || "~");
+}
 $("#srcSeg").addEventListener("click", e => {
   const b = e.target.closest("[data-src]"); if (!b) return;
-  newSrc = b.dataset.src;
-  setPressed($("#srcSeg"), "src", newSrc);
-  $("#commonsField").hidden = newSrc !== "commons"; $("#folderField").hidden = newSrc !== "folder";
+  newSrc = b.dataset.src; applySrc();
   if (newSrc === "folder") browse($("#folderInput").value || "~");
 });
 async function browse(path) {
@@ -1264,13 +1277,16 @@ $("#newRunForm").addEventListener("submit", async e => {
   $("#createRunBtn").disabled = true;
   try {
     const body = {name: $("#nameInput").value, campaign: S.campaign, nomination: newNom, source_type: newSrc, limit};
+    const f = $("#csvFile").files[0];
     if (newSrc === "csv") {
-      const f = $("#csvFile").files[0];
-      if (!f) throw new Error("Оберіть CSV-файл");
-      body.csv_text = await f.text(); body.source = f.name;
+      if (!f) throw new Error("Оберіть файл списку (CSV/JSON) або виберіть інше джерело");
+      body.source = f.name;
+    } else body.source = newSrc === "commons" ? $("#catInput").value.trim() : $("#folderInput").value.trim();
+    if (S.campaign === "wlm" && f) {
+      body.csv_text = await f.text();
       body.oblast = $("#oblastInput").value.trim();
       try { localStorage.setItem("wlm-oblast", body.oblast); } catch {}
-    } else body.source = newSrc === "commons" ? $("#catInput").value.trim() : $("#folderInput").value.trim();
+    }
     const run = await api("/api/runs", {method:"POST", body});
     $("#newRunDlg").close();
     $("#nameInput").value = ""; $("#limitInput").value = "";

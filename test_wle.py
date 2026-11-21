@@ -680,6 +680,22 @@ class TestCampaigns(unittest.TestCase):
         self.assertEqual(merged[0]["categories"], "Cat A|Cat Z")
         self.assertEqual(len(merged), 4)
 
+    def test_parse_json_list(self):
+        import json as _j
+        lst = _j.dumps([{"title": "1.jpg", "monument_id": "63-1-1", "categories": ["A", "B"]},
+                        {"file": "File:2_x.jpg", "id": "12-2-2"}])
+        rows = sources.parse_wlm_csv(lst)
+        self.assertEqual(rows[0], {"title": "File:1.jpg", "monument_id": "63-1-1", "categories": "A|B"})
+        self.assertEqual(rows[1]["title"], "File:2 x.jpg")
+        self.assertEqual([r["title"] for r in sources.parse_wlm_csv(lst, "63")], ["File:1.jpg"])
+        d = sources.parse_wlm_csv(_j.dumps({"a.jpg": "63-9-9", "b.jpg": {"monument_id": "63-9-8", "categories": "Z"}}))
+        self.assertEqual([(r["monument_id"], r["categories"]) for r in d], [("63-9-9", ""), ("63-9-8", "Z")])
+        exp = sources.parse_wlm_csv(_j.dumps({"images": [{"title": "File:q.jpg", "monument_id": "63-1-1"}]}))
+        self.assertEqual(exp[0]["title"], "File:q.jpg")
+        for bad in ("[1,2]", "{oops", '[{"x": 1}]'):
+            with self.assertRaises(ValueError):
+                sources.parse_wlm_csv(bad)
+
     def test_parse_csv_delimiters_and_errors(self):
         semi = self.CSV.replace(",", ";")
         self.assertEqual(len(sources.parse_wlm_csv("\ufeff" + semi, "63")), 4)
@@ -768,8 +784,6 @@ class TestCampaigns(unittest.TestCase):
         self.assertEqual(client.post("/api/runs", json={**body, "oblast": "99"}).status_code, 400)
         self.assertEqual(client.post("/api/runs", json={"campaign": "wle", "nomination": "quality",
                                                          "source_type": "csv", "csv_text": self.CSV}).status_code, 400)
-        self.assertEqual(client.post("/api/runs", json={**body, "source_type": "commons",
-                                                         "source": "Cat"}).status_code, 400)
         with patch("wle_filter.worker.sources.list_wlm_csv", fake_list):
             r = client.post("/api/runs", json=body)
             self.assertEqual(r.status_code, 201, r.text)
@@ -809,6 +823,84 @@ class TestCampaigns(unittest.TestCase):
         self.assertIn("build_year:1971", text)
         self.assertEqual(client.delete("/api/years").status_code, 204)
         self.assertEqual(client.get("/api/years").json()["total"], 0)
+        store.close(); tmp.cleanup()
+
+
+    def test_wlm_folder_with_and_without_csv(self):
+        from fastapi.testclient import TestClient
+        from wle_filter.server import create_app
+        tmp = tempfile.TemporaryDirectory()
+        photos = Path(tmp.name) / "images"
+        photos.mkdir()
+        # імена файлів, як їх зберігав скрипт WLM: «File:» → «File_», пробіли → «_»
+        noise_pil(1).save(photos / "File_1.jpg")
+        noise_pil(2).save(photos / "File_1_copy.jpg")
+        noise_pil(3).save(photos / "unrelated.jpg")
+        store = Store(Path(tmp.name) / "db.sqlite3")
+        worker = Worker(store, yolo_loader=lambda: fake_yolo([]), ocr_loader=None)
+        client = TestClient(create_app(store, worker))
+        base = {"campaign": "wlm", "nomination": "wlm", "source_type": "folder", "source": str(photos)}
+
+        r = client.post("/api/runs", json={**base, "csv_text": self.CSV, "oblast": "63"})
+        self.assertEqual(r.status_code, 201, r.text)
+        rid = r.json()["id"]
+        worker.join(rid, 30)
+        run = client.get(f"/api/runs/{rid}").json()
+        self.assertEqual(run["total"], 2)                     # 1.jpg і «1 copy.jpg»; ще 2 рядки без файлів
+        self.assertEqual(run["options"]["missing"], 2)
+        titles = {i["title"]: i for i in client.post(f"/api/runs/{rid}/results",
+                  json={"view": "all"}).json()["items"]}
+        self.assertEqual(titles["File:1.jpg"]["monument_id"], "63-101-0001")
+        self.assertEqual(titles["File:1 copy.jpg"]["reasons"][0]["code"], "blacklist")
+
+        r = client.post("/api/runs", json=base)                # без CSV — усі фото папки
+        rid2 = r.json()["id"]
+        worker.join(rid2, 30)
+        self.assertEqual(client.get(f"/api/runs/{rid2}").json()["total"], 3)
+        self.assertEqual(client.post("/api/runs", json={**base, "source": "/nope/x"}).status_code, 400)
+        store.close(); tmp.cleanup()
+
+    def test_wlm_commons_category_with_optional_file(self):
+        from fastapi.testclient import TestClient
+        from wle_filter.server import create_app
+        tmp = tempfile.TemporaryDirectory()
+        photos = Path(tmp.name) / "p"
+        photos.mkdir()
+        noise_pil(1).save(photos / "a.jpg")
+        noise_pil(2).save(photos / "b.jpg")
+        store = Store(Path(tmp.name) / "db.sqlite3")
+        worker = Worker(store, yolo_loader=lambda: fake_yolo([]), ocr_loader=None)
+        client = TestClient(create_app(store, worker))
+        calls = {}
+
+        def fake_cat(category, limit=None, session=None, progress=None, with_categories=False):
+            calls["wc"] = with_categories
+            return [{"key": f"File:{n}.jpg", "title": f"File:{n}.jpg", "page_id": i, "author": "u",
+                     "timestamp": None, "width": 256, "height": 256, "mime": None, "thumb_url": None,
+                     "page_url": None, "local_path": str(photos / f"{n}.jpg"),
+                     "categories": "Cat X|Mass grave" if n == "b" else "Cat X"}
+                    for i, n in enumerate("ab")]
+
+        def run(**kw):
+            with patch("wle_filter.worker.sources.list_commons_category", fake_cat):
+                r = client.post("/api/runs", json={"campaign": "wlm", "nomination": "wlm",
+                                                   "source_type": "commons", "source": "Cat", **kw})
+                self.assertEqual(r.status_code, 201, r.text)
+                worker.join(r.json()["id"], 30)
+            return r.json()["id"]
+
+        rid = run()                                           # без файлу: лише категорії Commons
+        self.assertTrue(calls["wc"])
+        items = {i["title"]: i for i in client.post(f"/api/runs/{rid}/results", json={"view": "all"}).json()["items"]}
+        self.assertEqual([r["code"] for r in items["File:b.jpg"]["reasons"]], ["blacklist"])
+        self.assertEqual(items["File:a.jpg"]["reasons"], [])
+
+        rid2 = run(csv_text="title,monument_id,categories\na.jpg,63-1-1,Foo\n")   # з необов'язковим файлом
+        run2 = client.get(f"/api/runs/{rid2}").json()
+        self.assertEqual(run2["options"]["matched"], 1)
+        it = {i["title"]: i for i in client.post(f"/api/runs/{rid2}/results", json={"view": "all"}).json()["items"]}
+        self.assertEqual(it["File:a.jpg"]["monument_id"], "63-1-1")
+        self.assertIn("Foo", it["File:a.jpg"]["categories"] or "")
         store.close(); tmp.cleanup()
 
 

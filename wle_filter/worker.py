@@ -59,15 +59,26 @@ class Worker:
         try:
             if run["total"] == 0:
                 store.set_run_status(run_id, "listing", "Отримую список фото…")
-                if run["source_type"] == "csv":
+                if run["source_type"] == "folder" and run.get("campaign") == "wlm":
+                    opts = run.get("options") or {}
+                    cands, missing = sources.list_wlm_folder(
+                        run["source"], opts.get("csv_path"), opts.get("oblast", ""), limit=limit)
+                    if missing:
+                        store.set_run_options(run_id, {**opts, "missing": missing})
+                elif run["source_type"] == "csv":
                     opts = run.get("options") or {}
                     cands = sources.list_wlm_csv(
                         opts["csv_path"], opts.get("oblast", ""), limit=limit,
                         progress=lambda m: store.set_run_status(run_id, "listing", m))
                 elif run["source_type"] == "commons":
+                    wlm = run.get("campaign") == "wlm"
                     cands = sources.list_commons_category(
-                        run["source"], limit=limit,
+                        run["source"], limit=limit, with_categories=wlm,
                         progress=lambda m: store.set_run_status(run_id, "listing", m))
+                    csv_path = (run.get("options") or {}).get("csv_path")
+                    if wlm and csv_path:   # необов'язковий файл: код пам'ятки й категорії за назвою
+                        found = sources.attach_csv(cands, csv_path)
+                        store.set_run_options(run_id, {**run["options"], "matched": found})
                 else:
                     cands = sources.list_local_folder(run["source"], limit=limit)
                 if not cands:
