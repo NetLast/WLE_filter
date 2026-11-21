@@ -19,7 +19,8 @@ from .config import Thresholds
 REASON_LABELS = {
     "blur": "Розмите",
     "person": "Людина в кадрі",
-    "sign": "Табличка / текст",
+    "sign": "Табличка / написи",
+    "watermark": "Вотермарка",
     "duplicate": "Дублікат",
     "mpx": "Мала роздільність",
     "error": "Помилка",
@@ -47,9 +48,22 @@ def item_reasons(item: dict, t: Thresholds) -> list[dict]:
         if area >= t.person_area and area > 0:
             reasons.append({"code": "person", "value": area})
 
-    sign = item.get("sign")
-    if t.sign_enabled and sign is not None and sign > t.sign_coverage:   # coverage > SIGN_COVERAGE_MIN
-        reasons.append({"code": "sign", "value": sign})
+    text_area = item.get("text_area")
+    use_ocr = t.sign_method == "ocr" and text_area is not None
+    if t.sign_enabled:
+        if use_ocr:
+            obj = item.get("sign_object") or 0
+            if text_area >= t.sign_text_area and text_area > 0:
+                reasons.append({"code": "sign", "value": text_area, "how": "ocr"})
+            elif obj >= t.sign_object_area and text_area > 0:
+                reasons.append({"code": "sign", "value": obj, "how": "object"})
+        else:
+            sign = item.get("sign")
+            if sign is not None and sign > t.sign_coverage:   # coverage > SIGN_COVERAGE_MIN
+                reasons.append({"code": "sign", "value": sign, "how": "legacy"})
+
+    if t.watermark_enabled and item.get("watermark"):
+        reasons.append({"code": "watermark", "value": item["watermark"]})
 
     if t.min_mpx_enabled:
         w, h = item.get("width") or 0, item.get("height") or 0
@@ -154,7 +168,9 @@ def reasons_text(reasons: list[dict]) -> str:
     parts = []
     for r in reasons:
         c, v = r["code"], r.get("value")
-        if c in ("person", "sign"):
+        if c == "watermark":
+            parts.append(f"watermark:{v}")
+        elif c in ("person", "sign"):
             parts.append(f"{c}:{float(v):.1%}")
         elif c == "duplicate":
             parts.append(f"duplicate:similar(dist={v})")

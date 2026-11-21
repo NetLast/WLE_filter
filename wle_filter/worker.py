@@ -75,8 +75,9 @@ class Worker:
             ocr = self.ocr_loader() if self.ocr_loader else None
             session = requests.Session()
             todo = store.pending_images(run_id)
-            # Прогін, проаналізований іншою версією алгоритмів: пороги скидаємо до пресету
-            if any(i["status"] == "done" for i in todo):
+            # Прогін, проаналізований v3.1 (інші шкали метрик): пороги скидаємо до пресету.
+            # Пороги v3.x з вихідними фільтрами зберігаються — нові ключі беруться за замовчуванням.
+            if any(i["status"] == "done" for i in todo) and "horizon_enabled" in run["thresholds"]:
                 preset = config.load_presets().get(run["nomination"])
                 if preset:
                     store.set_run_thresholds(run_id, preset["thresholds"])

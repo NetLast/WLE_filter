@@ -144,7 +144,8 @@ class TestAnalysis(unittest.TestCase):
 
     def test_analyze_keys(self):
         m = analysis.analyze(to_pil(sharp_img()), fake_yolo([]))
-        self.assertEqual(set(m), {"blur", "persons", "sign", "dhash", "phash"})
+        self.assertEqual(set(m), {"blur", "persons", "sign", "dhash", "phash", "text_area", "text",
+                                  "watermark", "text_boxes", "sign_object", "sign_object_box"})
         self.assertEqual(len(m["dhash"]), 16)
 
 
@@ -419,6 +420,80 @@ class TestLegacyRecount(unittest.TestCase):
             self.assertEqual(counts, {"ok": 1, "flagged": 1, "error": 1})
             rows, counts = recount.recount_legacy_csv(p, Thresholds(blur_threshold=40))
             self.assertEqual(counts["flagged"], 0)
+
+
+# ═══ Таблички через OCR і вотермарки ═══════════════════════════════════════
+def fake_ocr(lines):
+    """lines: [(x0, y0, x1, y1, text, score)] у пікселях."""
+    return MagicMock(return_value=([[[[x0, y0], [x1, y0], [x1, y1], [x0, y1]], t, sc]
+                                     for x0, y0, x1, y1, t, sc in lines], None))
+
+
+class TestOcrSigns(unittest.TestCase):
+    img = np.full((400, 800, 3), 120, np.uint8)
+
+    def test_plaque_lines_grouped(self):
+        r = analysis.text_signs(self.img, fake_ocr([
+            (320, 200, 420, 215, "Дуб звичайний", 0.8),
+            (330, 218, 410, 232, "Quercus robur", 0.82),
+            (335, 236, 405, 250, "1400 років", 0.8)]))
+        self.assertEqual([b[4] for b in r["text_boxes"]], ["sign"])     # одна табличка
+        self.assertGreater(r["text_area"], 100 * 50 / (800 * 400))
+        self.assertEqual(r["watermark"], "")
+        self.assertIn("Quercus", r["text"])
+
+    def test_short_word_with_repeat_is_text(self):
+        # «АНАЛІЗИ», прочитане як «AHA», — справжній текст
+        r = analysis.text_signs(self.img, fake_ocr([(300, 100, 500, 140, "AHA", 0.64)]))
+        self.assertGreater(r["text_area"], 0)
+
+    def test_watermark_near_edge(self):
+        r = analysis.text_signs(self.img, fake_ocr([(10, 300, 110, 310, "OlegKanewsky", 0.75)]))
+        self.assertEqual(r["watermark"], "OlegKanewsky")
+        self.assertEqual(r["text_area"], 0.0)
+        self.assertEqual(r["text_boxes"][0][4], "watermark")
+
+    def test_junk_text_ignored(self):
+        r = analysis.text_signs(self.img, fake_ocr([
+            (300, 100, 400, 120, "1111", 0.9),       # візерунок
+            (300, 150, 400, 170, "II", 0.9),         # візерунок
+            (300, 200, 400, 220, "JUUU", 0.9),       # візерунок
+            (300, 300, 400, 320, "A", 0.95),         # замало символів
+            (300, 350, 400, 370, "", 0.0),           # текстура: порожній рядок
+            (100, 100, 300, 140, "трава", 0.2)]))    # низька впевненість
+        self.assertEqual((r["text_area"], r["watermark"], r["text_boxes"]), (0.0, "", []))
+
+    def test_object_area_measured(self):
+        img = np.full((400, 800, 3), (60, 140, 60), np.uint8)       # «трава»
+        img[120:380, 300:500] = (150, 150, 150)                       # «камінь»
+        img[200:250, 330:470] = (30, 30, 30)                          # «табличка»
+        r = analysis.text_signs(img, fake_ocr([(340, 205, 460, 245, "Дуб звичайний", 0.8)]))
+        self.assertAlmostEqual(r["sign_object"], 200 * 260 / (800 * 400), delta=0.03)
+
+    def test_verdict_rules(self):
+        t = Thresholds()
+        ok = dict(text_area=0.005, sign_object=0.05, sign=0.0)
+        self.assertEqual(evaluate([item(1, **ok)], t)[0]["verdict"], "ok")
+        r = evaluate([item(1, text_area=0.03, sign_object=0.05)], t)[0]["reasons"]
+        self.assertEqual((r[0]["code"], r[0]["how"]), ("sign", "ocr"))
+        r = evaluate([item(1, text_area=0.005, sign_object=0.2)], t)[0]["reasons"]
+        self.assertEqual((r[0]["code"], r[0]["how"]), ("sign", "object"))
+        r = evaluate([item(1, text_area=0.0, watermark="Oleg")], t)[0]["reasons"]
+        self.assertEqual(r, [{"code": "watermark", "value": "Oleg"}])
+        self.assertEqual(evaluate([item(1, watermark="Oleg")], Thresholds(watermark_enabled=False))[0]["verdict"], "ok")
+
+    def test_legacy_method_and_no_ocr_fallback(self):
+        # метод «евристика» ігнорує OCR
+        it = item(1, text_area=0.5, sign=0.0)
+        self.assertEqual(evaluate([it], Thresholds(sign_method="legacy"))[0]["verdict"], "ok")
+        # OCR не встановлено (text_area=None) — працює вихідна евристика
+        it = item(1, text_area=None, sign=0.3)
+        self.assertEqual(evaluate([it], Thresholds())[0]["reasons"][0]["how"], "legacy")
+
+    def test_analyze_without_ocr_keeps_original_metrics(self):
+        m = analysis.analyze(to_pil(sharp_img()), fake_yolo([]), None)
+        self.assertIsNone(m["text_area"])
+        self.assertEqual(m["sign"], analysis.sign_coverage(sharp_img()))
 
 
 # ═══ Еквівалентність з вихідним main.py (перший коміт) ═══════════════════
