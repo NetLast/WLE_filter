@@ -59,6 +59,11 @@ CREATE TABLE IF NOT EXISTS pairs (
     PRIMARY KEY (a, b)
 );
 CREATE INDEX IF NOT EXISTS idx_pairs_run ON pairs(run_id);
+-- Роки побудови пам'яток (WLM): спільні для всіх прогонів, підвантажуються в будь-який момент
+CREATE TABLE IF NOT EXISTS monument_years (
+    monument_id TEXT PRIMARY KEY,
+    year        INTEGER NOT NULL
+);
 """
 
 # Колонки, додані у v3.1 (міграція наявних баз)
@@ -68,9 +73,12 @@ NEW_COLUMNS = {
     "shadows": "REAL", "highlights": "REAL", "sat_clip": "REAL",
     "embed": "BLOB", "mver": "INTEGER NOT NULL DEFAULT 0",
     "text_area": "REAL", "watermark": "TEXT", "sign_object": "REAL", "sign_object_box": "TEXT",
+    "monument_id": "TEXT", "categories": "TEXT",
 }
+# Колонки runs, додані у v3.4 (режими WLE / WLM)
+NEW_RUN_COLUMNS = {"campaign": "TEXT NOT NULL DEFAULT 'wle'", "options": "TEXT"}
 
-RUN_FIELDS = ("id", "name", "nomination", "source_type", "source", "status",
+RUN_FIELDS = ("id", "name", "campaign", "nomination", "source_type", "source", "options", "status",
               "message", "thresholds", "created_at", "updated_at")
 
 
@@ -92,6 +100,12 @@ class Store:
         for col, typ in NEW_COLUMNS.items():
             if col not in have:
                 self._conn.execute(f"ALTER TABLE images ADD COLUMN {col} {typ}")
+        have_runs = {r[1] for r in self._conn.execute("PRAGMA table_info(runs)")}
+        for col, typ in NEW_RUN_COLUMNS.items():
+            if col not in have_runs:
+                self._conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {typ}")
+        self._years_cache: dict[str, int] | None = None
+        self._years_dv = None
         self._conn.commit()
 
     @property
@@ -113,27 +127,34 @@ class Store:
             return [dict(r) for r in self._conn.execute(sql, args).fetchall()]
 
     # ─── Прогони ─────────────────────────────────────────────────────────────
-    def create_run(self, name, nomination, source_type, source, thresholds: dict) -> int:
+    def create_run(self, name, nomination, source_type, source, thresholds: dict,
+                   campaign: str = "wle", options: dict | None = None) -> int:
         t = now()
         cur = self._exec(
-            "INSERT INTO runs(name, nomination, source_type, source, thresholds, created_at, updated_at)"
-            " VALUES (?,?,?,?,?,?,?)",
-            (name, nomination, source_type, source, json.dumps(thresholds), t, t))
+            "INSERT INTO runs(name, campaign, nomination, source_type, source, options, thresholds,"
+            " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (name, campaign, nomination, source_type, source, json.dumps(options or {}),
+             json.dumps(thresholds), t, t))
         return cur.lastrowid
+
+    @staticmethod
+    def _decode_run(run: dict) -> dict:
+        run["thresholds"] = json.loads(run["thresholds"])
+        run["options"] = json.loads(run["options"]) if run.get("options") else {}
+        return run
 
     def get_run(self, run_id: int) -> dict | None:
         rows = self._all("SELECT * FROM runs WHERE id=?", (run_id,))
         if not rows:
             return None
-        run = rows[0]
-        run["thresholds"] = json.loads(run["thresholds"])
+        run = self._decode_run(rows[0])
         run.update(self.run_counts(run_id))
         return run
 
     def list_runs(self) -> list[dict]:
         runs = self._all("SELECT * FROM runs ORDER BY id DESC")
         for r in runs:
-            r["thresholds"] = json.loads(r["thresholds"])
+            self._decode_run(r)
             r.update(self.run_counts(r["id"]))
         return runs
 
@@ -153,6 +174,10 @@ class Store:
     def set_run_thresholds(self, run_id: int, thresholds: dict):
         self._exec("UPDATE runs SET thresholds=?, updated_at=? WHERE id=?",
                    (json.dumps(thresholds), now(), run_id))
+
+    def set_run_options(self, run_id: int, options: dict):
+        self._exec("UPDATE runs SET options=?, updated_at=? WHERE id=?",
+                   (json.dumps(options), now(), run_id))
 
     def rename_run(self, run_id: int, name: str):
         self._exec("UPDATE runs SET name=?, updated_at=? WHERE id=?", (name, now(), run_id))
@@ -174,11 +199,12 @@ class Store:
             for i, c in enumerate(candidates):
                 cur = self._conn.execute(
                     "INSERT OR IGNORE INTO images(run_id, seq, key, title, page_id, author, timestamp,"
-                    " width, height, mime, thumb_url, page_url, local_path)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " width, height, mime, thumb_url, page_url, local_path, monument_id, categories)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (run_id, start + i, c["key"], c["title"], c.get("page_id"), c.get("author"),
                      c.get("timestamp"), c.get("width"), c.get("height"), c.get("mime"),
-                     c.get("thumb_url"), c.get("page_url"), c.get("local_path")))
+                     c.get("thumb_url"), c.get("page_url"), c.get("local_path"),
+                     c.get("monument_id"), c.get("categories")))
                 added += cur.rowcount
             self._conn.commit()
         return added
@@ -239,9 +265,47 @@ class Store:
 
     def images(self, run_id: int) -> list[dict]:
         rows = self._all("SELECT * FROM images WHERE run_id=? ORDER BY seq", (run_id,))
+        years = self.years()
         for r in rows:
             self._decode(r)
+            r["year"] = years.get(r.get("monument_id") or "")
         return rows
+
+    # ─── Роки побудови (WLM) ─────────────────────────────────────────────────
+    def years(self) -> dict[str, int]:
+        with self._lock:
+            # data_version змінюється, коли базу змінило інше з'єднання (напр. CLI поруч із сервером)
+            dv = self._conn.execute("PRAGMA data_version").fetchone()[0]
+            if self._years_cache is None or dv != self._years_dv:
+                self._years_cache = {r[0]: r[1] for r in
+                                     self._conn.execute("SELECT monument_id, year FROM monument_years")}
+                self._years_dv = dv
+            return self._years_cache
+
+    def load_years(self, data: dict, replace: bool = False) -> dict:
+        """Додає/оновлює роки з {monument_id: рік}. Некоректні значення пропускаються."""
+        good, bad = {}, 0
+        for k, v in data.items():
+            try:
+                y = int(float(v))
+            except (TypeError, ValueError):
+                bad += 1
+                continue
+            if 1000 <= y <= 2100 and str(k).strip():
+                good[str(k).strip()] = y
+            else:
+                bad += 1
+        with self._lock:
+            if replace:
+                self._conn.execute("DELETE FROM monument_years")
+            self._conn.executemany("INSERT OR REPLACE INTO monument_years(monument_id, year) VALUES (?,?)",
+                                   list(good.items()))
+            self._conn.commit()
+            self._years_cache = None
+        return {"loaded": len(good), "skipped": bad, "total": len(self.years())}
+
+    def clear_years(self):
+        self.load_years({}, replace=True)
 
     @staticmethod
     def _decode(r: dict) -> dict:
@@ -257,7 +321,9 @@ class Store:
         rows = self._all("SELECT * FROM images WHERE id=?", (image_id,))
         if not rows:
             return None
-        return self._decode(rows[0])
+        r = self._decode(rows[0])
+        r["year"] = self.years().get(r.get("monument_id") or "")
+        return r
 
     def set_manual(self, image_id: int, decision: str | None, note: str | None = None):
         self._exec("UPDATE images SET manual=?, note=COALESCE(?, note), reviewed_at=? WHERE id=?",

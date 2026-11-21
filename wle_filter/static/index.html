@@ -36,6 +36,8 @@ header{position:sticky;top:0;z-index:20;background:var(--background-color-base);
   display:flex;align-items:center;gap:12px;padding:8px 16px;min-height:52px}
 .brand{font-weight:700;font-size:var(--font-size-large,1.125rem);display:flex;align-items:center;gap:8px;white-space:nowrap;color:var(--color-emphasized)}
 .brand .dot{width:12px;height:12px;border-radius:50%;background:var(--background-color-progressive)}
+#campSeg{flex:none;display:inline-flex;width:auto}
+#campSeg .cdx-toggle-button{flex:none;min-width:56px;padding-inline:14px}
 #runSelect{flex:0 1 380px;min-width:0;max-width:420px}
 #newRunBtn,#pauseBtn,#resumeBtn,#exportMenu,#runMenu,#themeBtn{flex:none}
 .run-progress{flex:1 1 260px;display:flex;flex-direction:column;justify-content:center;gap:4px;min-width:160px;max-width:480px}
@@ -78,6 +80,8 @@ input[type=range]{width:100%;accent-color:var(--color-progressive)}
 .param .cdx-text-input{min-width:0}
 .param .cdx-text-input__input{text-align:right;min-width:0}
 canvas.hist{width:100%;height:46px;display:block;cursor:crosshair;margin-top:4px}
+.years-box{display:flex;flex-direction:column;gap:6px;margin-top:6px}
+.years-box .row2{display:flex;gap:6px;flex-wrap:wrap}
 .hint{font-size:var(--font-size-x-small,.75rem);color:var(--color-subtle);margin:6px 0 0;line-height:1.35}
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px}
 .row2 .cdx-select{min-width:0;width:100%;font-size:var(--font-size-small,.875rem)}
@@ -286,7 +290,8 @@ dialog.wle-dialog .cdx-dialog__header,dialog.wle-dialog .cdx-dialog__footer{flex
 <body>
 
 <header>
-  <div class="brand"><span class="dot"></span>WLE Filter</div>
+  <div class="brand"><span class="dot"></span><span class="brand-text">Wiki Loves Filter</span></div>
+  <div class="cdx-toggle-button-group" id="campSeg" role="group" aria-label="Режим"></div>
   <select id="runSelect" class="cdx-select" title="Прогін"></select>
   <button id="newRunBtn" class="cdx-button cdx-button--action-progressive cdx-button--weight-primary" aria-label="Новий прогін">+<span class="lbl-full"> Новий прогін</span><span class="lbl-short"> Прогін</span></button>
   <div class="run-progress">
@@ -344,16 +349,29 @@ dialog.wle-dialog .cdx-dialog__header,dialog.wle-dialog .cdx-dialog__footer{flex
       </div>
     </header>
     <div class="cdx-dialog__body">
-      <div class="cdx-field">
+      <div class="cdx-field" id="nomField">
         <div class="cdx-label"><span class="cdx-label__label"><span class="cdx-label__label__text">Номінація</span></span>
           <span class="cdx-label__description">Визначає стартові пороги чутливості</span></div>
         <div class="cdx-toggle-button-group" id="nomSeg"></div>
       </div>
-      <div class="cdx-field">
+      <div class="cdx-field" id="srcField">
         <div class="cdx-label"><span class="cdx-label__label"><span class="cdx-label__label__text">Джерело фото</span></span></div>
         <div class="cdx-toggle-button-group" id="srcSeg">
           <button type="button" data-src="commons" class="cdx-toggle-button cdx-toggle-button--framed cdx-toggle-button--toggled-on" aria-pressed="true">Категорія Commons</button>
           <button type="button" data-src="folder" class="cdx-toggle-button cdx-toggle-button--framed" aria-pressed="false">Локальна папка</button>
+        </div>
+      </div>
+      <div class="cdx-field" id="csvField" hidden>
+        <label class="cdx-label" for="csvFile"><span class="cdx-label__label"><span class="cdx-label__label__text">CSV-файл зі списком фото</span></span>
+          <span class="cdx-label__description">Колонки: <code>title</code>, <code>monument_id</code>, <code>categories</code>. Файл читається в браузері й копіюється в теку даних.</span></label>
+        <input type="file" id="csvFile" accept=".csv,text/csv,text/plain">
+        <div class="field-row" style="margin-top:8px">
+          <div class="cdx-field">
+            <label class="cdx-label" for="oblastInput"><span class="cdx-label__label"><span class="cdx-label__label__text">Код області</span>
+              <span class="cdx-label__label__optional-flag"> (початок monument_id)</span></span></label>
+            <div class="cdx-text-input"><input class="cdx-text-input__input" type="text" id="oblastInput" placeholder="63 — усі області, якщо порожньо"></div>
+          </div>
+          <div class="cdx-field"><div class="small muted" id="csvYearsNote" style="align-self:end;padding-bottom:6px"></div></div>
         </div>
       </div>
       <div class="cdx-field" id="commonsField">
@@ -406,8 +424,14 @@ const S = {
   items: [], ids: [], matched: 0, summary: null, hist: null,
   pageSize: 60, focusIdx: -1, lbIndex: -1, showBoxes: true,
   loading: false, dirtySave: false,
+  campaign: (() => { try { return localStorage.getItem("wle-campaign") === "wlm" ? "wlm" : "wle"; } catch { return "wle"; } })(),
+  years: null,
 };
-const REASONS = {blur:"Розмите", person:"Людина", sign:"Табличка/написи", watermark:"Вотермарка", duplicate:"Дублікат", mpx:"Мала роздільність", error:"Помилка"};
+const CAMPS = {wle: ["WLE", "Wiki Loves Earth"], wlm: ["WLM", "Wiki Loves Monuments"]};
+const runCamp = r => r?.campaign || "wle";
+const visibleRuns = () => S.runs.filter(r => runCamp(r) === S.campaign);
+const presetsFor = c => Object.fromEntries(Object.entries(S.presets).filter(([, p]) => (p.campaign || "wle") === c));
+const REASONS = {blur:"Розмите", person:"Людина", sign:"Табличка/написи", watermark:"Вотермарка", duplicate:"Дублікат", mpx:"Мала роздільність", blacklist:"Чорний список", year:"Рік побудови", error:"Помилка"};
 const STATUS = {new:"новий", listing:"отримую список", running:"обробка", paused:"на паузі", done:"готово", failed:"помилка"};
 
 const $ = (s, el=document) => el.querySelector(s);
@@ -471,26 +495,30 @@ const tok = name => getComputedStyle(document.documentElement).getPropertyValue(
 async function init() {
   applyTheme(document.documentElement.dataset.theme || "auto");
   [S.info, S.presets] = await Promise.all([api("/api/info"), api("/api/presets")]);
-  await loadRuns();
   const fromHash = +location.hash.replace("#run=", "");
-  const id = S.runs.find(r => r.id === fromHash)?.id ?? S.runs[0]?.id;
+  const hashed = (await api("/api/runs")).find(r => r.id === fromHash);
+  if (hashed) S.campaign = runCamp(hashed);
+  renderCampSeg();
+  await loadRuns();
+  const id = hashed?.id ?? visibleRuns()[0]?.id;
   if (id) await selectRun(id); else renderWelcome();
   setInterval(poll, 2500);
 }
 
 async function loadRuns() {
   S.runs = await api("/api/runs");
-  const sel = $("#runSelect");
-  sel.innerHTML = S.runs.length ? S.runs.map(r =>
+  const sel = $("#runSelect"), vis = visibleRuns();
+  sel.innerHTML = vis.length ? vis.map(r =>
     `<option value="${r.id}">#${r.id} · ${esc(r.name)} — ${STATUS[r.status] || r.status}</option>`).join("")
     : `<option>— немає прогонів —</option>`;
-  sel.disabled = !S.runs.length;
-  if (S.run) sel.value = S.run.id;
+  sel.disabled = !vis.length;
+  if (S.run && runCamp(S.run) === S.campaign) sel.value = S.run.id;
 }
 
 async function selectRun(id) {
   S.run = await api(`/api/runs/${id}`);
   S.t = {...S.run.thresholds};
+  if (runCamp(S.run) !== S.campaign) { S.campaign = runCamp(S.run); renderCampSeg(); await loadRuns(); }
   S.view = "flagged"; S.reason = null; S.search = "";
   location.hash = "run=" + id;
   $("#runSelect").value = id;
@@ -499,11 +527,29 @@ async function selectRun(id) {
   await refresh();
 }
 
+function renderCampSeg() {
+  $("#campSeg").innerHTML = Object.entries(CAMPS).map(([k, [l, t]]) =>
+    toggleBtn(l, k === S.campaign, `data-camp="${k}" title="${t}"`)).join("");
+  document.title = `${CAMPS[S.campaign][0]} Filter`;
+}
+$("#campSeg").addEventListener("click", async e => {
+  const b = e.target.closest("[data-camp]"); if (!b || b.dataset.camp === S.campaign) return;
+  await saveThresholds();
+  S.campaign = b.dataset.camp;
+  try { localStorage.setItem("wle-campaign", S.campaign); } catch {}
+  renderCampSeg(); await loadRuns();
+  const first = visibleRuns()[0];
+  if (first) selectRun(first.id); else { location.hash = ""; renderWelcome(); }
+});
+
 function renderWelcome() {
   S.run = null; renderRunHeader();
+  const wlm = S.campaign === "wlm";
   $("#app").innerHTML = `<div class="welcome">
-    <h1>Перевірка фото Wiki Loves Earth</h1>
-    <p class="muted">Створіть прогін: оберіть номінацію та джерело фото — категорію Commons або локальну папку.
+    <h1>Перевірка фото ${CAMPS[S.campaign][1]}</h1>
+    <p class="muted">${wlm
+      ? "Створіть прогін: оберіть CSV-файл зі списком фото (колонки title, monument_id, categories) і код області. Роки побудови пам'яток можна підвантажити в будь-який момент."
+      : "Створіть прогін: оберіть номінацію та джерело фото — категорію Commons або локальну папку."}
     Аналіз запускається один раз, а пороги чутливості потім можна змінювати наживо.</p>
     <p><button class="cdx-button cdx-button--action-progressive cdx-button--weight-primary" onclick="openNewRun()">+ Створити перший прогін</button></p></div>`;
 }
@@ -615,12 +661,19 @@ const FILTERS = [
    params:[{k:"duplicate_distance", label:"Макс. відстань", min:0, max:30, step:1}]},
   {key:"min_mpx", title:"Мін. роздільність", hint:"Роздільність оригіналу в мегапікселях.",
    params:[{k:"min_mpx", label:"Мін. мегапікселів", min:0.1, max:24, step:0.1}]},
+  {key:"blacklist", title:"Чорний список категорій", camps:["wlm"],
+   hint:"Фото відсіюється, якщо в його категоріях (з CSV) є будь-який з рядків — підрядок без урахування регістру. По одному в рядку.",
+   params:[], textarea:"blacklist_categories"},
+  {key:"year", title:"Рік побудови (авторське право)", camps:["wlm"],
+   hint:"Відсіює фото пам'яток, збудованих ПІЗНІШЕ за вказаний рік. Роки беруться з JSON {\"monument_id\": рік}; без нього фільтр нічого не відсіює.",
+   params:[{k:"year_cutoff", label:"Межа: відсіювати пам'ятки новіші за", min:1800, max:2025, step:1}], years:true},
 ];
+const activeFilters = () => FILTERS.filter(f => !f.camps || f.camps.includes(runCamp(S.run)));
 const enabledKey = f => f.key === "min_mpx" ? "min_mpx_enabled" : f.key + "_enabled";
 const reasonCode = f => f.key === "min_mpx" ? "mpx" : f.key;
 
 function renderAside() {
-  const presetOpts = Object.entries(S.presets).map(([k, p]) =>
+  const presetOpts = Object.entries(presetsFor(runCamp(S.run))).map(([k, p]) =>
     `<option value="${k}" ${k === S.run.nomination ? "selected" : ""}>${esc(p.label)}</option>`).join("");
   const p = S.presets[S.run.nomination];
   $("#aside").innerHTML = `
@@ -632,7 +685,7 @@ function renderAside() {
       <button class="cdx-button" id="applyPreset" title="Застосувати пороги пресету">Застосувати</button>
     </div>
     <p class="preset-desc muted small" id="presetDesc">${esc(p?.description || "")}</p>
-    ${FILTERS.map(f => `
+    ${activeFilters().map(f => `
       <div class="filter" id="f-${f.key}">
         <div class="fhead">
           <span class="cdx-toggle-switch">
@@ -651,12 +704,17 @@ function renderAside() {
               <div class="cdx-text-input"><input class="cdx-text-input__input" type="number" data-num="${pr.k}" aria-label="${pr.label}"
                 step="${pr.pct ? 0.5 : pr.step}" min="${pr.pct ? pr.min*100 : pr.min}" max="${pr.pct ? pr.max*100 : pr.max}"></div>
             </div>`).join("")}
+          ${f.textarea ? `<div class="cdx-text-input"><textarea data-ta="${f.textarea}" rows="4" spellcheck="false" aria-label="${f.title}"></textarea></div>` : ""}
+          ${f.years ? `<div class="years-box"><span class="small" id="yearsState"></span>
+              <div class="row2"><button type="button" class="cdx-button" id="yearsLoad">Підвантажити JSON…</button>
+              <button type="button" class="cdx-button cdx-button--weight-quiet" id="yearsClear" title="Видалити всі збережені роки">Очистити</button></div>
+              <input type="file" id="yearsFile" accept=".json,application/json" hidden></div>` : ""}
           ${f.key === "sign" ? `<div class="row2" style="grid-template-columns:1fr">
               <select class="cdx-select" data-sel="sign_method" title="Метод"><option value="ocr">Розпізнавання тексту (рекомендовано)</option><option value="legacy">Евристика main.py (як раніше)</option></select>
             </div>` : ""}
           ${f.key === "duplicate" ? `<div class="row2">
               <select class="cdx-select" data-sel="hash_type" title="Тип хешу"><option value="dhash">dHash (швидкий)</option><option value="phash">pHash (стійкіший)</option></select>
-              <select class="cdx-select" data-sel="duplicate_scope" title="Серед яких фото шукати"><option value="all">Серед усіх фото</option><option value="author">У межах автора</option></select>
+              <select class="cdx-select" data-sel="duplicate_scope" title="Серед яких фото шукати"><option value="all">Серед усіх фото</option><option value="author">У межах автора</option>${runCamp(S.run) === "wlm" ? '<option value="monument">У межах пам\'ятки</option>' : ""}</select>
             </div>` : ""}
           <p class="hint" ${f.key === "sign" ? 'id="signHint"' : ""}>${f.hint}</p>
         </div>
@@ -680,6 +738,14 @@ function renderAside() {
     setT(pr.k, Math.min(pr.max, Math.max(pr.min, v)));
   }));
   aside.querySelectorAll("[data-sel]").forEach(el => el.addEventListener("change", () => setT(el.dataset.sel, el.value)));
+  aside.querySelectorAll("[data-ta]").forEach(el => el.addEventListener("input", () => setT(el.dataset.ta, el.value)));
+  $("#yearsLoad")?.addEventListener("click", () => $("#yearsFile").click());
+  $("#yearsFile")?.addEventListener("change", e => uploadYears(e.target.files[0], e.target));
+  $("#yearsClear")?.addEventListener("click", async () => {
+    if (!confirm("Видалити всі збережені роки побудови?")) return;
+    await api("/api/years", {method:"DELETE"}); await refreshYears(); refresh(); toast("Роки видалено", "notice");
+  });
+  refreshYears();
   ["blur","person","sign"].forEach(k => { const c = $("#h-" + k); if (c) c.addEventListener("click", e => histClick(k, e)); });
   $("#presetSel").addEventListener("change", e => { $("#presetDesc").textContent = S.presets[e.target.value]?.description || ""; });
   $("#applyPreset").addEventListener("click", () => {
@@ -718,11 +784,11 @@ function fromSlider(p, s) {
   v = Math.round(v / p.step) * p.step;
   return +v.toFixed(4);
 }
-function fmtParam(p, v) { return p.pct ? fmtPct(v) : (p.k === "duplicate_distance" ? String(v) : fmtNum(v)); }
+function fmtParam(p, v) { return p.pct ? fmtPct(v) : (["duplicate_distance","year_cutoff"].includes(p.k) ? String(v) : fmtNum(v)); }
 
 function syncAside() {
   const aside = $("#aside"); if (!aside) return;
-  FILTERS.forEach(f => {
+  activeFilters().forEach(f => {
     const on = !!S.t[enabledKey(f)];
     $(`[data-en="${enabledKey(f)}"]`).checked = on;
     $("#f-" + f.key).classList.toggle("off", !on);
@@ -735,6 +801,7 @@ function syncAside() {
     });
   });
   aside.querySelectorAll("[data-sel]").forEach(el => el.value = S.t[el.dataset.sel]);
+  aside.querySelectorAll("[data-ta]").forEach(el => { if (document.activeElement !== el) el.value = S.t[el.dataset.ta] ?? ""; });
   aside.querySelectorAll("[data-only]").forEach(el => { const [k, v] = el.dataset.only.split(":"); el.hidden = S.t[k] !== v; });
   const sh = $("#signHint");
   if (sh) sh.textContent = S.t.sign_method === "ocr"
@@ -742,6 +809,25 @@ function syncAside() {
        : "Розпізнаний текст. Відсіює, якщо написів у кадрі багато (сумарна площа ≥ порогу) АБО табличка разом з постаментом займає ≥ порогу. Площа з постаментом — наближена оцінка, її видно в перегляді фото.")
     : "Вихідна евристика: частка кадру з текстоподібними блоками (СТРОГО більше порогу). Чутлива до текстур (гілки, трава, відблиски).";
   drawHists();
+}
+
+async function refreshYears() {
+  try { S.years = await api("/api/years"); } catch { return; }
+  const el = $("#yearsState"); if (!el) return;
+  el.textContent = S.years.total
+    ? `Підвантажено років: ${fmtInt(S.years.total)} (${S.years.min}–${S.years.max})`
+    : "Роки ще не підвантажено — фільтр не діє.";
+}
+async function uploadYears(file, input) {
+  if (!file) return;
+  try {
+    const data = JSON.parse(await file.text());
+    if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("Очікується JSON-об'єкт {\"monument_id\": рік}");
+    const r = await api("/api/years", {method:"POST", body:{data}});
+    toast(`Років: +${fmtInt(r.loaded)}${r.skipped ? `, пропущено ${r.skipped}` : ""}`);
+    await refreshYears(); refresh();
+  } catch (e) { toast("Не вдалося підвантажити: " + e.message, "error"); }
+  finally { if (input) input.value = ""; }
 }
 
 function setT(k, v) { S.t[k] = v; syncAside(); onThresholdsChanged(); }
@@ -862,6 +948,8 @@ function reasonLabel(r) {
     case "watermark": return `Вотермарка «${String(r.value).slice(0, 20)}»`;
     case "duplicate": return `Дублікат (d=${r.value})`;
     case "mpx": return `${r.value} Мп`;
+    case "blacklist": return `Чорний список: ${String(r.value).slice(0, 40)}`;
+    case "year": return `Збудовано ${r.value} р.`;
     case "error": return "Помилка";
   }
   return r.code;
@@ -889,7 +977,7 @@ function cardHTML(it) {
     </div>
     <div class="cbody">
       <div class="ctitle" title="${esc(it.title)}">${esc(it.title.replace(/^File:/, ""))}</div>
-      <div class="metrics">${it.author ? `<span>✎ ${esc(it.author)}</span>` : ""}</div>
+      <div class="metrics">${it.author ? `<span>✎ ${esc(it.author)}</span>` : ""}${it.monument_id ? `<span title="Код пам'ятки">▣ ${esc(it.monument_id)}</span>` : ""}${it.year ? `<span class="${hit("year")}" title="Рік побудови">${it.year}</span>` : ""}</div>
       <div class="metrics">${metrics}</div>
       <div class="cactions">${decisionBtns(it)}</div>
     </div></div>`;
@@ -1036,6 +1124,8 @@ function renderLbSide() {
     <div class="cdx-text-input"><textarea id="noteInput" placeholder="Нотатка (необов'язково)" aria-label="Нотатка">${esc(it.note || "")}</textarea></div>
     <dl class="kv">
       <dt>Автор</dt><dd>${esc(it.author || "—")}</dd>
+      ${it.monument_id ? `<dt>Пам'ятка</dt><dd>${esc(it.monument_id)}${it.year ? ` · ${it.year} р.` : ` <span class="muted">(рік невідомий)</span>`}</dd>` : ""}
+      ${it.categories ? `<dt>Категорії</dt><dd class="small" style="word-break:break-word">${esc(it.categories)}</dd>` : ""}
       <dt>Різкість</dt><dd>${fmtNum(it.blur)} <span class="muted">(поріг ${fmtNum(S.t.blur_threshold)})</span></dd>
       <dt>Людей</dt><dd>${nPersons}, найбільша ${fmtPct(it.person_area)}</dd>
       ${it.text_area != null ? `<dt>Написи</dt><dd>${it.text_area ? `${fmtPct(it.text_area)} кадру${it.text ? ` — «${esc(it.text.slice(0, 60))}»` : ""}` : "—"}</dd>
@@ -1117,11 +1207,26 @@ function setPressed(group, attr, val) {
   });
 }
 function showNewRunErr(msg) { $("#newRunErr").textContent = msg; $("#newRunErrBox").hidden = !msg; }
-function openNewRun() {
-  $("#nomSeg").innerHTML = Object.entries(S.presets).map(([k, p]) => toggleBtn(esc(p.label), k === newNom, `data-nom="${k}"`)).join("");
+async function openNewRun() {
+  const wlm = S.campaign === "wlm", pr = presetsFor(S.campaign);
+  if (!pr[newNom]) newNom = Object.keys(pr)[0];
+  $("#nomSeg").innerHTML = Object.entries(pr).map(([k, p]) => toggleBtn(esc(p.label), k === newNom, `data-nom="${k}"`)).join("");
+  $("#nomField").hidden = Object.keys(pr).length < 2;
+  $("#srcField").hidden = wlm;                        // WLM: джерело лише CSV
+  newSrc = wlm ? "csv" : (newSrc === "csv" ? "commons" : newSrc);
+  setPressed($("#srcSeg"), "src", newSrc);
+  $("#csvField").hidden = !wlm;
+  $("#commonsField").hidden = wlm || newSrc !== "commons";
+  $("#folderField").hidden = wlm || newSrc !== "folder";
+  try { $("#oblastInput").value = localStorage.getItem("wlm-oblast") ?? "63"; } catch {}
   showNewRunErr("");
   setNom(newNom);
   $("#newRunDlg").showModal();
+  if (wlm) {
+    await refreshYears();
+    $("#csvYearsNote").textContent = S.years?.total ? `Роки побудови підвантажено: ${fmtInt(S.years.total)}`
+      : "Роки побудови не підвантажено — це можна зробити пізніше на панелі «Рік побудови».";
+  }
 }
 function setNom(k) {
   newNom = k;
@@ -1155,11 +1260,18 @@ $("#folderInput").addEventListener("keydown", e => { if (e.key === "Enter") { e.
 $("#cancelNewRun").onclick = () => $("#newRunDlg").close();
 $("#newRunForm").addEventListener("submit", async e => {
   e.preventDefault();
-  const source = newSrc === "commons" ? $("#catInput").value.trim() : $("#folderInput").value.trim();
   const limit = +$("#limitInput").value || null;
   $("#createRunBtn").disabled = true;
   try {
-    const run = await api("/api/runs", {method:"POST", body:{name: $("#nameInput").value, nomination:newNom, source_type:newSrc, source, limit}});
+    const body = {name: $("#nameInput").value, campaign: S.campaign, nomination: newNom, source_type: newSrc, limit};
+    if (newSrc === "csv") {
+      const f = $("#csvFile").files[0];
+      if (!f) throw new Error("Оберіть CSV-файл");
+      body.csv_text = await f.text(); body.source = f.name;
+      body.oblast = $("#oblastInput").value.trim();
+      try { localStorage.setItem("wlm-oblast", body.oblast); } catch {}
+    } else body.source = newSrc === "commons" ? $("#catInput").value.trim() : $("#folderInput").value.trim();
+    const run = await api("/api/runs", {method:"POST", body});
     $("#newRunDlg").close();
     $("#nameInput").value = ""; $("#limitInput").value = "";
     await loadRuns(); await selectRun(run.id);
@@ -1202,7 +1314,7 @@ $("#deleteRun").onclick = async () => {
   if (!confirm(`Видалити прогін «${S.run.name}» разом з усіма метриками та ручними рішеннями? Самі фото не видаляються.`)) return;
   await api(`/api/runs/${S.run.id}`, {method:"DELETE"});
   S.run = null; await loadRuns();
-  if (S.runs.length) selectRun(S.runs[0].id); else renderWelcome();
+  if (visibleRuns().length) selectRun(visibleRuns()[0].id); else renderWelcome();
 };
 window.addEventListener("beforeunload", () => { if (S.dirtySave && S.run) navigator.sendBeacon?.(`/api/runs/${S.run.id}/thresholds`, new Blob([JSON.stringify(S.t)], {type:"application/json"})); });
 window.addEventListener("resize", debounce(drawBoxes, 100));

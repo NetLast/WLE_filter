@@ -57,11 +57,19 @@ class Thresholds:
     duplicate_enabled: bool = True
     duplicate_distance: int = 12
     hash_type: str = "dhash"          # "dhash" | "phash"
-    duplicate_scope: str = "all"      # "all" — як у вихідному коді; "author" — у межах автора
+    duplicate_scope: str = "all"      # "all" — як у вихідному коді; "author" — у межах автора; "monument" — у межах пам'ятки (WLM)
 
     # Мінімальна роздільність оригіналу, мегапікселі (у вихідному коді не було; вимкнено)
     min_mpx_enabled: bool = False
     min_mpx: float = 2.0
+
+    # ── Лише WLM (за замовчуванням вимкнено) ──
+    # Чорний список категорій: підрядок (без урахування регістру), по одному в рядку
+    blacklist_enabled: bool = False
+    blacklist_categories: str = ""
+    # Рік побудови пам'ятки новіший за межу — авторське право (немає свободи панорами)
+    year_enabled: bool = False
+    year_cutoff: int = 1954
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "Thresholds":
@@ -88,7 +96,7 @@ class Thresholds:
         t = cls(**clean)
         if t.hash_type not in ("dhash", "phash"):
             t.hash_type = "dhash"
-        if t.duplicate_scope not in ("all", "author"):
+        if t.duplicate_scope not in ("all", "author", "monument"):
             t.duplicate_scope = "all"
         if t.sign_method not in ("ocr", "legacy"):
             t.sign_method = "ocr"
@@ -102,18 +110,43 @@ class Thresholds:
 # ─── Пресети номінацій ───────────────────────────────────────────────────────
 # Стартові значення; їх варто відкалібрувати на реальних даних через інтерфейс
 # і зберегти кнопкою «Зберегти як пресет».
+CAMPAIGNS = {
+    "wle": {"label": "WLE", "title": "Wiki Loves Earth"},
+    "wlm": {"label": "WLM", "title": "Wiki Loves Monuments"},
+}
+DEFAULT_CAMPAIGN = "wle"
+
+WLM_BLACKLIST = "world war ii graves in ukraine\nbrotherhood graves in ukraine\nmass grave"
+
 DEFAULT_PRESETS: dict[str, dict] = {
     "quality": {
+        "campaign": "wle",
         "label": "Якісна номінація",
         "description": "Вихідні пороги main.py: blur 200, люди 0.25/5%, табличка 15%, dHash 12.",
         "category": "Wiki Loves Earth Ukraine 2026 - Quality",
         "thresholds": Thresholds().to_dict(),
     },
     "quantity": {
+        "campaign": "wle",
         "label": "Кількісна номінація",
         "description": "Ті самі вихідні пороги — налаштуйте повзунками і збережіть у пресет.",
         "category": "Wiki Loves Earth Ukraine 2026 - Quantity",
         "thresholds": Thresholds().to_dict(),
+    },
+    # WLM: пороги зі скрипта WLM Ukraine 2021 (v3.4.8). Табличка — стара евристика з 45%,
+    # вотермарка вимкнена (у тому скрипті її не було).
+    "wlm": {
+        "campaign": "wlm",
+        "label": "Wiki Loves Monuments",
+        "description": "Пороги зі скрипта WLM 2021: blur 60, люди 0,50 / 25%, табличка 45%, dHash 16; "
+                       "чорний список категорій, рік > 1954, дублі в межах пам'ятки.",
+        "category": "",
+        "thresholds": Thresholds(
+            blur_threshold=60.0, person_confidence=0.50, person_area=0.25,
+            sign_method="legacy", sign_coverage=0.45, watermark_enabled=False,
+            duplicate_distance=16, duplicate_scope="monument",
+            blacklist_enabled=True, blacklist_categories=WLM_BLACKLIST,
+            year_enabled=True, year_cutoff=1954).to_dict(),
     },
 }
 
@@ -126,7 +159,8 @@ def load_presets() -> dict[str, dict]:
             if saved.pop("_version", 1) < THRESHOLDS_VERSION:
                 saved = {}
             for key, p in saved.items():
-                base = presets.get(key, {"label": key, "description": "", "category": ""})
+                base = presets.get(key, {"campaign": DEFAULT_CAMPAIGN, "label": key,
+                                         "description": "", "category": ""})
                 base.update({k: v for k, v in p.items() if k != "thresholds"})
                 base["thresholds"] = Thresholds.from_dict(p.get("thresholds")).to_dict()
                 presets[key] = base
@@ -137,7 +171,8 @@ def load_presets() -> dict[str, dict]:
 
 def save_preset(key: str, thresholds: dict, label: str | None = None) -> dict:
     presets = load_presets()
-    p = presets.get(key, {"label": label or key, "description": "", "category": ""})
+    p = presets.get(key, {"campaign": DEFAULT_CAMPAIGN, "label": label or key,
+                          "description": "", "category": ""})
     if label:
         p["label"] = label
     p["thresholds"] = Thresholds.from_dict(thresholds).to_dict()
