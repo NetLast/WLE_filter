@@ -140,7 +140,7 @@ DEFAULT_PRESETS: dict[str, dict] = {
         "label": "Wiki Loves Monuments",
         "description": "Пороги зі скрипта WLM 2021: blur 60, люди 0,50 / 25%, табличка 45%, dHash 16; "
                        "чорний список категорій, рік > 1954, дублі в межах пам'ятки.",
-        "category": "",
+        "category": "Wiki Loves Monuments in Ukraine 2026",
         "thresholds": Thresholds(
             blur_threshold=60.0, person_confidence=0.50, person_area=0.25,
             sign_method="legacy", sign_coverage=0.45, watermark_enabled=False,

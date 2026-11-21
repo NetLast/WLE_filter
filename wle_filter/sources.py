@@ -47,9 +47,45 @@ def _api_get(session: requests.Session, params: dict, retries: int = 5) -> dict:
     raise RuntimeError("Commons API недоступний")
 
 
+def fetch_file_categories(session: requests.Session, page_ids: list[int], progress=None) -> dict[int, str]:
+    """Категорії файлів Commons: {pageid: 'Кат1|Кат2'} (без префікса «Category:», видимі й приховані)."""
+    out: dict[int, list[str]] = {}
+    for i in range(0, len(page_ids), 50):
+        batch = page_ids[i:i + 50]
+        params = {"action": "query", "pageids": "|".join(str(x) for x in batch),
+                  "prop": "categories", "cllimit": "max"}
+        while True:
+            data = _api_get(session, params)
+            for p in data.get("query", {}).get("pages", []):
+                out.setdefault(p["pageid"], []).extend(
+                    c["title"].removeprefix("Category:") for c in p.get("categories", []))
+            if "continue" not in data:
+                break
+            params.update(data["continue"])
+        if progress:
+            progress(f"Категорії файлів: {min(i + 50, len(page_ids))}/{len(page_ids)}")
+        time.sleep(0.3)
+    return {k: "|".join(v) for k, v in out.items()}
+
+
+def attach_csv(cands: list[dict], csv_path: str) -> int:
+    """Додає monument_id і категорії з CSV до кандидатів за назвою файлу. Повертає, скільком знайшлося."""
+    rows = {_name_key(r["title"]): r for r in parse_wlm_csv(Path(csv_path).read_text(encoding="utf-8-sig"))}
+    found = 0
+    for c in cands:
+        r = rows.get(_name_key(c["title"]))
+        if not r:
+            continue
+        found += 1
+        c["monument_id"] = r["monument_id"]
+        extra = [x for x in r["categories"].split("|") if x and x not in (c.get("categories") or "")]
+        c["categories"] = "|".join(filter(None, [c.get("categories")] + extra))
+    return found
+
+
 def list_commons_category(category: str, limit: int | None = None,
                           session: requests.Session | None = None,
-                          progress=None) -> list[dict]:
+                          progress=None, with_categories: bool = False) -> list[dict]:
     """Файли категорії з метаданими (pageid, автор, розмір, thumb 800 px)."""
     session = session or requests.Session()
     category = category.strip().removeprefix("Category:")
@@ -84,10 +120,12 @@ def list_commons_category(category: str, limit: int | None = None,
             progress(f"Метадані: {min(i + 50, len(members))}/{len(members)}")
         time.sleep(0.3)
 
+    cats = fetch_file_categories(session, [m["pageid"] for m in members], progress) if with_categories else {}
     out = []
     for m in members:
         ii = by_id.get(m["pageid"], {})
         out.append({
+            "categories": cats.get(m["pageid"]),
             "key": m["title"],
             "title": m["title"],
             "page_id": m["pageid"],

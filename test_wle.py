@@ -768,8 +768,6 @@ class TestCampaigns(unittest.TestCase):
         self.assertEqual(client.post("/api/runs", json={**body, "oblast": "99"}).status_code, 400)
         self.assertEqual(client.post("/api/runs", json={"campaign": "wle", "nomination": "quality",
                                                          "source_type": "csv", "csv_text": self.CSV}).status_code, 400)
-        self.assertEqual(client.post("/api/runs", json={**body, "source_type": "commons",
-                                                         "source": "Cat"}).status_code, 400)
         with patch("wle_filter.worker.sources.list_wlm_csv", fake_list):
             r = client.post("/api/runs", json=body)
             self.assertEqual(r.status_code, 201, r.text)
@@ -843,8 +841,50 @@ class TestCampaigns(unittest.TestCase):
         rid2 = r.json()["id"]
         worker.join(rid2, 30)
         self.assertEqual(client.get(f"/api/runs/{rid2}").json()["total"], 3)
-        self.assertEqual(client.post("/api/runs", json={**base, "source_type": "commons",
-                                                         "source": "Cat"}).status_code, 400)
+        self.assertEqual(client.post("/api/runs", json={**base, "source": "/nope/x"}).status_code, 400)
+        store.close(); tmp.cleanup()
+
+    def test_wlm_commons_category_with_optional_file(self):
+        from fastapi.testclient import TestClient
+        from wle_filter.server import create_app
+        tmp = tempfile.TemporaryDirectory()
+        photos = Path(tmp.name) / "p"
+        photos.mkdir()
+        noise_pil(1).save(photos / "a.jpg")
+        noise_pil(2).save(photos / "b.jpg")
+        store = Store(Path(tmp.name) / "db.sqlite3")
+        worker = Worker(store, yolo_loader=lambda: fake_yolo([]), ocr_loader=None)
+        client = TestClient(create_app(store, worker))
+        calls = {}
+
+        def fake_cat(category, limit=None, session=None, progress=None, with_categories=False):
+            calls["wc"] = with_categories
+            return [{"key": f"File:{n}.jpg", "title": f"File:{n}.jpg", "page_id": i, "author": "u",
+                     "timestamp": None, "width": 256, "height": 256, "mime": None, "thumb_url": None,
+                     "page_url": None, "local_path": str(photos / f"{n}.jpg"),
+                     "categories": "Cat X|Mass grave" if n == "b" else "Cat X"}
+                    for i, n in enumerate("ab")]
+
+        def run(**kw):
+            with patch("wle_filter.worker.sources.list_commons_category", fake_cat):
+                r = client.post("/api/runs", json={"campaign": "wlm", "nomination": "wlm",
+                                                   "source_type": "commons", "source": "Cat", **kw})
+                self.assertEqual(r.status_code, 201, r.text)
+                worker.join(r.json()["id"], 30)
+            return r.json()["id"]
+
+        rid = run()                                           # без файлу: лише категорії Commons
+        self.assertTrue(calls["wc"])
+        items = {i["title"]: i for i in client.post(f"/api/runs/{rid}/results", json={"view": "all"}).json()["items"]}
+        self.assertEqual([r["code"] for r in items["File:b.jpg"]["reasons"]], ["blacklist"])
+        self.assertEqual(items["File:a.jpg"]["reasons"], [])
+
+        rid2 = run(csv_text="title,monument_id,categories\na.jpg,63-1-1,Foo\n")   # з необов'язковим файлом
+        run2 = client.get(f"/api/runs/{rid2}").json()
+        self.assertEqual(run2["options"]["matched"], 1)
+        it = {i["title"]: i for i in client.post(f"/api/runs/{rid2}/results", json={"view": "all"}).json()["items"]}
+        self.assertEqual(it["File:a.jpg"]["monument_id"], "63-1-1")
+        self.assertIn("Foo", it["File:a.jpg"]["categories"] or "")
         store.close(); tmp.cleanup()
 
 

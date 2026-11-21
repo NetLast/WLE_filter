@@ -203,8 +203,6 @@ def create_app(store: Store | None = None, worker: Worker | None = None) -> Fast
         if preset.get("campaign", config.DEFAULT_CAMPAIGN) != body.campaign:
             raise HTTPException(400, "Пресет не належить до цього режиму")
         source, options, rows = body.source.strip(), {}, None
-        if body.campaign == "wlm" and body.source_type == "commons":
-            raise HTTPException(400, "У режимі WLM джерело — CSV-файл або локальна папка")
         if body.source_type == "csv" and body.campaign != "wlm":
             raise HTTPException(400, "CSV-джерело доступне лише в режимі WLM")
         text = None
@@ -228,12 +226,12 @@ def create_app(store: Store | None = None, worker: Worker | None = None) -> Fast
         if text is not None and body.campaign == "wlm":
             from .sources import parse_wlm_csv
             try:
-                rows = parse_wlm_csv(text, body.oblast)
+                rows = parse_wlm_csv(text, body.oblast if body.source_type != "commons" else "")
             except ValueError as e:
                 raise HTTPException(400, str(e))
             if not rows:
                 raise HTTPException(400, "У CSV немає рядків" + (f" з monument_id «{body.oblast}-…»" if body.oblast.strip() else ""))
-        scope = f"{source}" + (f" · область {body.oblast.strip()}" if rows is not None and body.oblast.strip() else "")
+        scope = f"{source}" + (f" · область {body.oblast.strip()}" if rows is not None and body.source_type != "commons" and body.oblast.strip() else "")
         name = body.name.strip() or f"{preset['label']}: {scope}"
         run_id = store.create_run(name, body.nomination, body.source_type, source,
                                   preset["thresholds"], campaign=body.campaign, options=options)
