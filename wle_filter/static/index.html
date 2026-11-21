@@ -68,6 +68,13 @@ aside{background:var(--background-color-base);border-right:1px solid var(--borde
 .filter{border:1px solid var(--border-color-subtle);border-radius:var(--border-radius-base,2px);padding:8px 12px 10px;margin-bottom:8px;
   background:var(--background-color-base)}
 .filter.off .fbody{opacity:.45;pointer-events:none}
+.filter.always-on.off .fbody{opacity:1;pointer-events:auto}   /* мін. роздільність: рух повзунка сам вмикає фільтр */
+#aside.ui-simple .filter:not(.keep){display:none}
+#aside:not(.ui-simple) .simple-only{display:none}
+.simple-sum{list-style:none;margin:6px 0 12px;padding:0;display:flex;flex-direction:column;gap:4px;font-size:.875rem}
+.simple-sum li{display:flex;gap:8px;align-items:baseline}
+.simple-sum .ok{color:var(--color-success,#14866d)}.simple-sum .no{color:var(--color-subtle,#72777d)}
+.uimode{margin:4px 0 10px}
 .fhead{display:flex;align-items:center;gap:8px;min-height:32px}
 .fhead .cdx-toggle-switch{flex:1;margin:0}
 .fhead .cdx-label__label__text{font-size:var(--font-size-medium,1rem)}
@@ -427,6 +434,7 @@ const S = {
   loading: false, dirtySave: false,
   campaign: (() => { try { return localStorage.getItem("wle-campaign") === "wlm" ? "wlm" : "wle"; } catch { return "wle"; } })(),
   years: null,
+  ui: (() => { try { return localStorage.getItem("wle-ui") === "simple" ? "simple" : "advanced"; } catch { return "advanced"; } })(),
 };
 const CAMPS = {wle: ["WLE", "Wiki Loves Earth"], wlm: ["WLM", "Wiki Loves Monuments"]};
 const runCamp = r => r?.campaign || "wle";
@@ -661,7 +669,7 @@ const FILTERS = [
   {key:"watermark", title:"Вотермарка", hint:"Дрібний поодинокий напис біля краю кадру (підпис автора, сайт). Рамка показується прямо на мініатюрі.", params:[]},
   {key:"duplicate", title:"Дублікати", hint:"Відстань Геммінга між перцептивними хешами (0 — ідентичні). Більше значення — більше збігів.",
    params:[{k:"duplicate_distance", label:"Макс. відстань", min:0, max:30, step:1}]},
-  {key:"min_mpx", title:"Мін. роздільність", hint:"Роздільність оригіналу в мегапікселях.",
+  {key:"min_mpx", title:"Мін. роздільність", hint:"Відсіює фото, у яких оригінал менший за вказану кількість мегапікселів. Працює в усіх конкурсах; повзунок сам вмикає фільтр.",
    params:[{k:"min_mpx", label:"Мін. мегапікселів", min:0.1, max:24, step:0.1}]},
   {key:"blacklist", title:"Чорний список категорій", camps:["wlm"],
    hint:"Фото відсіюється, якщо в його категоріях (з CSV) є будь-який з рядків — підрядок без урахування регістру. По одному в рядку.",
@@ -682,13 +690,19 @@ function renderAside() {
     <div class="drawer-head"><h2 class="section-title">Чутливість</h2>
       <button class="cdx-button cdx-button--weight-quiet" id="drawerClose" aria-label="Закрити панель">✕</button></div>
     <h2 class="section-title">Чутливість</h2>
+    <div class="cdx-toggle-button-group uimode" id="uiSeg" role="group" aria-label="Режим налаштувань">
+      ${toggleBtn("Простий", S.ui === "simple", 'data-ui="simple" title="Налаштування пресету вже застосовані; доступна лише мінімальна роздільність"')}
+      ${toggleBtn("Розширений", S.ui === "advanced", 'data-ui="advanced" title="Усі пороги та повзунки"')}
+    </div>
     <div class="preset-row">
       <select id="presetSel" class="cdx-select" title="Пресет номінації">${presetOpts}</select>
       <button class="cdx-button" id="applyPreset" title="Застосувати пороги пресету">Застосувати</button>
     </div>
     <p class="preset-desc muted small" id="presetDesc">${esc(p?.description || "")}</p>
+    <div class="simple-only"><div class="small muted">Діючі налаштування (з пресету; змінити їх можна в розширеному режимі):</div>
+      <ul class="simple-sum" id="simpleSum"></ul></div>
     ${activeFilters().map(f => `
-      <div class="filter" id="f-${f.key}">
+      <div class="filter${f.key === "min_mpx" ? " keep always-on" : ""}" id="f-${f.key}">
         <div class="fhead">
           <span class="cdx-toggle-switch">
             <input id="sw-${f.key}" class="cdx-toggle-switch__input" type="checkbox" role="switch" data-en="${enabledKey(f)}">
@@ -739,6 +753,12 @@ function renderAside() {
     const pr = paramDef(el.dataset.num); let v = +el.value; if (pr.pct) v /= 100;
     setT(pr.k, Math.min(pr.max, Math.max(pr.min, v)));
   }));
+  $("#uiSeg").addEventListener("click", e => {
+    const b = e.target.closest("[data-ui]"); if (!b) return;
+    S.ui = b.dataset.ui;
+    try { localStorage.setItem("wle-ui", S.ui); } catch {}
+    setPressed($("#uiSeg"), "ui", S.ui); syncAside();
+  });
   aside.querySelectorAll("[data-sel]").forEach(el => el.addEventListener("change", () => setT(el.dataset.sel, el.value)));
   aside.querySelectorAll("[data-ta]").forEach(el => el.addEventListener("input", () => setT(el.dataset.ta, el.value)));
   $("#yearsLoad")?.addEventListener("click", () => $("#yearsFile").click());
@@ -788,8 +808,28 @@ function fromSlider(p, s) {
 }
 function fmtParam(p, v) { return p.pct ? fmtPct(v) : (["duplicate_distance","year_cutoff"].includes(p.k) ? String(v) : fmtNum(v)); }
 
+function simpleSummary() {
+  const t = S.t, pct = v => fmtPct(v), row = (on, txt) => `<li><span class="${on ? "ok" : "no"}">${on ? "✓" : "–"}</span><span>${txt}</span></li>`;
+  const out = [
+    row(t.blur_enabled, `Розмиття: різкість < ${fmtNum(t.blur_threshold)}`),
+    row(t.person_enabled, `Люди: від ${pct(t.person_area)} кадру (упевненість ${fmtNum(t.person_confidence)})`),
+    row(t.sign_enabled, t.sign_method === "ocr"
+      ? `Таблички: написи ≥ ${pct(t.sign_text_area)} або табличка з постаментом ≥ ${pct(t.sign_object_area)}`
+      : `Таблички: покриття текстом > ${pct(t.sign_coverage)}`),
+    row(t.watermark_enabled, "Вотермарка"),
+    row(t.duplicate_enabled, `Дублі: відстань ≤ ${t.duplicate_distance}` + ({author: ", в межах автора", monument: ", в межах пам'ятки"}[t.duplicate_scope] || "")),
+  ];
+  if (runCamp(S.run) === "wlm") {
+    out.push(row(t.blacklist_enabled, `Чорний список категорій (${(t.blacklist_categories || "").split("\n").filter(x => x.trim()).length})`));
+    out.push(row(t.year_enabled, `Рік побудови > ${t.year_cutoff}`));
+  }
+  return out.join("");
+}
+
 function syncAside() {
   const aside = $("#aside"); if (!aside) return;
+  aside.classList.toggle("ui-simple", S.ui === "simple");
+  const sum = $("#simpleSum"); if (sum) sum.innerHTML = simpleSummary();
   activeFilters().forEach(f => {
     const on = !!S.t[enabledKey(f)];
     $(`[data-en="${enabledKey(f)}"]`).checked = on;
@@ -832,7 +872,11 @@ async function uploadYears(file, input) {
   finally { if (input) input.value = ""; }
 }
 
-function setT(k, v) { S.t[k] = v; syncAside(); onThresholdsChanged(); }
+function setT(k, v) {
+  S.t[k] = v;
+  if (k === "min_mpx" && !S.t.min_mpx_enabled) S.t.min_mpx_enabled = true;   // повзунок сам вмикає фільтр
+  syncAside(); onThresholdsChanged();
+}
 const refreshDebounced = debounce(() => refresh(), 220);
 const saveDebounced = debounce(saveThresholds, 900);
 function onThresholdsChanged() {
