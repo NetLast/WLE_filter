@@ -365,7 +365,7 @@ dialog.wle-dialog .cdx-dialog__header,dialog.wle-dialog .cdx-dialog__footer{flex
       <div class="cdx-field" id="csvField" hidden>
         <label class="cdx-label" for="csvFile"><span class="cdx-label__label"><span class="cdx-label__label__text" id="csvLabel">CSV-файл зі списком фото</span></span>
           <span class="cdx-label__description" id="csvDesc"></span></label>
-        <input type="file" id="csvFile" accept=".csv,text/csv,text/plain">
+        <input type="file" id="csvFile" accept=".csv,.json,.txt,text/csv,application/json,text/plain">
         <div class="field-row" style="margin-top:8px">
           <div class="cdx-field" id="oblastWrap">
             <label class="cdx-label" for="oblastInput"><span class="cdx-label__label"><span class="cdx-label__label__text">Код області</span>
@@ -1244,12 +1244,12 @@ function applySrc() {
   $("#folderField").hidden = newSrc !== "folder";
   $("#csvField").hidden = !wlm;
   $("#oblastWrap").hidden = newSrc === "commons";
-  $("#csvLabel").textContent = newSrc === "csv" ? "CSV-файл зі списком фото" : "Файл зі списком пам'яток (необов'язково)";
+  $("#csvLabel").textContent = newSrc === "csv" ? "Файл зі списком фото (CSV / JSON)" : "Файл зі списком пам'яток (необов'язково)";
   $("#csvDesc").textContent = newSrc === "csv"
-    ? "Колонки: title, monument_id, categories. Файл читається в браузері й копіюється в теку даних."
+    ? "CSV (колонки title, monument_id, categories) або JSON ([{\"title\":…, \"monument_id\":…}] чи {\"назва файлу\": \"monument_id\"}). Файл читається в браузері й копіюється в теку даних."
     : newSrc === "folder"
-      ? "CSV (title, monument_id, categories): файли папки зіставляються з рядками за назвою, у прогін потрапляють лише знайдені. Без файлу перевіряються всі фото папки."
-      : "CSV (title, monument_id, categories): додає код пам'ятки до фото категорії за назвою. Без файлу беруться лише категорії самих файлів на Commons (чорний список працює, дублі — серед усіх фото).";
+      ? "CSV або JSON зі списком (title, monument_id, categories): файли папки зіставляються з рядками за назвою, у прогін потрапляють лише знайдені. Без файлу перевіряються всі фото папки."
+      : "CSV або JSON зі списком (title, monument_id, categories): додає код пам'ятки до фото категорії за назвою. Без файлу беруться лише категорії самих файлів на Commons (чорний список працює, дублі — серед усіх фото).";
   if (newSrc === "folder" && !$("#fsList").innerHTML) browse($("#folderInput").value || "~");
 }
 $("#srcSeg").addEventListener("click", e => {
@@ -1279,7 +1279,7 @@ $("#newRunForm").addEventListener("submit", async e => {
     const body = {name: $("#nameInput").value, campaign: S.campaign, nomination: newNom, source_type: newSrc, limit};
     const f = $("#csvFile").files[0];
     if (newSrc === "csv") {
-      if (!f) throw new Error("Оберіть CSV-файл або виберіть інше джерело");
+      if (!f) throw new Error("Оберіть файл списку (CSV/JSON) або виберіть інше джерело");
       body.source = f.name;
     } else body.source = newSrc === "commons" ? $("#catInput").value.trim() : $("#folderInput").value.trim();
     if (S.campaign === "wlm" && f) {

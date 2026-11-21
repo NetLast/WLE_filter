@@ -680,6 +680,22 @@ class TestCampaigns(unittest.TestCase):
         self.assertEqual(merged[0]["categories"], "Cat A|Cat Z")
         self.assertEqual(len(merged), 4)
 
+    def test_parse_json_list(self):
+        import json as _j
+        lst = _j.dumps([{"title": "1.jpg", "monument_id": "63-1-1", "categories": ["A", "B"]},
+                        {"file": "File:2_x.jpg", "id": "12-2-2"}])
+        rows = sources.parse_wlm_csv(lst)
+        self.assertEqual(rows[0], {"title": "File:1.jpg", "monument_id": "63-1-1", "categories": "A|B"})
+        self.assertEqual(rows[1]["title"], "File:2 x.jpg")
+        self.assertEqual([r["title"] for r in sources.parse_wlm_csv(lst, "63")], ["File:1.jpg"])
+        d = sources.parse_wlm_csv(_j.dumps({"a.jpg": "63-9-9", "b.jpg": {"monument_id": "63-9-8", "categories": "Z"}}))
+        self.assertEqual([(r["monument_id"], r["categories"]) for r in d], [("63-9-9", ""), ("63-9-8", "Z")])
+        exp = sources.parse_wlm_csv(_j.dumps({"images": [{"title": "File:q.jpg", "monument_id": "63-1-1"}]}))
+        self.assertEqual(exp[0]["title"], "File:q.jpg")
+        for bad in ("[1,2]", "{oops", '[{"x": 1}]'):
+            with self.assertRaises(ValueError):
+                sources.parse_wlm_csv(bad)
+
     def test_parse_csv_delimiters_and_errors(self):
         semi = self.CSV.replace(",", ";")
         self.assertEqual(len(sources.parse_wlm_csv("\ufeff" + semi, "63")), 4)
