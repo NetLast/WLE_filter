@@ -1,4 +1,4 @@
-"""Джерела фото: категорія Wikimedia Commons і локальна папка.
+"""Джерела фото: категорія Wikimedia Commons, CSV зі списком файлів (WLM) і локальна папка.
 
 Кожне джерело повертає список словників-«кандидатів» з полями:
     key, title, page_id, author, timestamp, width, height, mime,
@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+import csv
+import io
 import os
 import time
 from datetime import datetime, timezone
@@ -97,6 +99,84 @@ def list_commons_category(category: str, limit: int | None = None,
             "thumb_url": ii.get("thumburl") or ii.get("url"),
             "page_url": ii.get("descriptionurl") or commons_page_url(m["title"]),
             "local_path": None,
+        })
+    return out
+
+
+# ─── CSV зі списком файлів (WLM) ─────────────────────────────────────────────
+CSV_REQUIRED = ("title", "monument_id")
+
+
+def parse_wlm_csv(text: str, oblast: str = "") -> list[dict]:
+    """Рядки CSV (колонки title, monument_id, categories) → {title, monument_id, categories}.
+
+    oblast — код області: лишаються рядки, де monument_id починається на «<код>-».
+    Файли, що повторюються, зводяться до першого входження; categories різних рядків
+    одного файлу об'єднуються.
+    """
+    text = text.lstrip("\ufeff")
+    head = text.split("\n", 1)[0]
+    delim = max(",;\t", key=head.count) if head.strip() else ","
+    reader = csv.DictReader(io.StringIO(text), delimiter=delim)
+    cols = [c.strip() for c in (reader.fieldnames or [])]
+    missing = [c for c in CSV_REQUIRED if c not in cols]
+    if missing:
+        raise ValueError(f"У CSV немає колонок: {', '.join(missing)}. Є: {', '.join(cols) or '—'}")
+    prefix = oblast.strip().rstrip("-") + "-" if oblast.strip() else ""
+    rows: dict[str, dict] = {}
+    for raw in reader:
+        row = {(k or "").strip(): (v or "").strip() for k, v in raw.items()}
+        title, mid = row.get("title", ""), row.get("monument_id", "")
+        if not title or (prefix and not mid.startswith(prefix)):
+            continue
+        title = title.replace("_", " ")
+        if not title.lower().startswith("file:"):
+            title = "File:" + title
+        cur = rows.get(title)
+        if cur is None:
+            rows[title] = {"title": title, "monument_id": mid, "categories": row.get("categories", "")}
+        elif row.get("categories") and row["categories"] not in cur["categories"]:
+            cur["categories"] += "|" + row["categories"]
+    return list(rows.values())
+
+
+def list_wlm_csv(csv_path: str, oblast: str = "", limit: int | None = None,
+                 session: requests.Session | None = None, progress=None) -> list[dict]:
+    """Кандидати з CSV; метадані та thumb 800 px беруться з Commons пачками по 50."""
+    session = session or requests.Session()
+    text = Path(csv_path).read_text(encoding="utf-8-sig")
+    rows = parse_wlm_csv(text, oblast)
+    if limit:
+        rows = rows[:limit]
+    info: dict[str, dict] = {}
+    for i in range(0, len(rows), 50):
+        batch = rows[i:i + 50]
+        data = _api_get(session, {
+            "action": "query", "titles": "|".join(r["title"] for r in batch),
+            "prop": "imageinfo", "iiprop": "url|size|user|timestamp|mime",
+            "iiurlwidth": str(ANALYSIS_WIDTH)})
+        q = data.get("query", {})
+        norm = {n["from"]: n["to"] for n in q.get("normalized", [])}
+        pages = {p["title"]: p for p in q.get("pages", [])}
+        for r in batch:
+            page = pages.get(norm.get(r["title"], r["title"]))
+            if page and not page.get("missing"):
+                info[r["title"]] = {**((page.get("imageinfo") or [{}])[0]), "pageid": page.get("pageid")}
+        if progress:
+            progress(f"Метадані: {min(i + 50, len(rows))}/{len(rows)}")
+        time.sleep(0.3)
+
+    out = []
+    for r in rows:
+        ii = info.get(r["title"], {})
+        out.append({
+            "key": r["title"], "title": r["title"], "page_id": ii.get("pageid"),
+            "author": ii.get("user"), "timestamp": ii.get("timestamp"),
+            "width": ii.get("width"), "height": ii.get("height"), "mime": ii.get("mime"),
+            "thumb_url": ii.get("thumburl") or ii.get("url"),
+            "page_url": ii.get("descriptionurl") or commons_page_url(r["title"]),
+            "local_path": None,
+            "monument_id": r["monument_id"], "categories": r["categories"],
         })
     return out
 

@@ -30,11 +30,20 @@ STATIC_DIR = Path(__file__).parent / "static"
 # ─── Моделі запитів ──────────────────────────────────────────────────────────
 class RunCreate(BaseModel):
     name: str = ""
+    campaign: Literal["wle", "wlm"] = "wle"
     nomination: str = "quality"
-    source_type: Literal["commons", "folder"]
-    source: str
+    source_type: Literal["commons", "folder", "csv"]
+    source: str = ""                       # категорія / папка / ім'я CSV-файлу (для відображення)
+    csv_text: Optional[str] = None         # вміст CSV (завантажується з браузера)
+    csv_path: Optional[str] = None         # або шлях до CSV на комп'ютері сервера
+    oblast: str = ""                       # WLM: префікс monument_id, напр. «63»
     limit: Optional[int] = Field(None, ge=1)
     start: bool = True
+
+
+class YearsUpload(BaseModel):
+    data: dict                             # {monument_id: рік}
+    replace: bool = False
 
 
 class ResultsQuery(BaseModel):
@@ -100,7 +109,7 @@ def _merge(images: list[dict], evals: list[dict]) -> list[dict]:
 def _public(item: dict) -> dict:
     keys = ("id", "seq", "title", "author", "page_id", "page_url", "timestamp", "width", "height",
             "status", "error", "blur", "blur_global", "sign", "text_area", "text", "watermark", "text_boxes",
-            "sign_object", "sign_object_box",
+            "sign_object", "sign_object_box", "monument_id", "categories", "year",
             "persons", "person_area",
             "horizon_angle", "horizon_conf", "horizon_row", "shadows", "highlights", "sat_clip",
             "outdated", "reasons", "auto_verdict", "verdict", "manual", "note")
@@ -141,6 +150,7 @@ def create_app(store: Store | None = None, worker: Worker | None = None) -> Fast
     def info():
         from .analysis import get_ocr
         return {"version": __version__, "reasons": REASON_LABELS, "ocr": get_ocr() is not None,
+                "campaigns": config.CAMPAIGNS, "years_loaded": len(store.years()),
                 "person_conf_floor": config.PERSON_CONF_FLOOR,
                 "data_dir": str(store.path.parent)}
 
@@ -157,6 +167,25 @@ def create_app(store: Store | None = None, worker: Worker | None = None) -> Fast
     def post_reset_preset(key: str):
         return config.reset_preset(key)
 
+    # ─── Роки побудови (WLM) ─────────────────────────────────────────────────
+    @app.get("/api/years")
+    def get_years():
+        ys = store.years()
+        return {"total": len(ys), "min": min(ys.values()) if ys else None,
+                "max": max(ys.values()) if ys else None}
+
+    @app.post("/api/years")
+    def post_years(body: YearsUpload):
+        """Підвантажує {monument_id: рік}; вердикти всіх прогонів оновлюються одразу."""
+        if not isinstance(body.data, dict) or not body.data:
+            raise HTTPException(400, "Очікується JSON-об'єкт {\"63-101-0001\": 1890, …}")
+        return store.load_years(body.data, replace=body.replace)
+
+    @app.delete("/api/years", status_code=204)
+    def delete_years():
+        store.clear_years()
+        return Response(status_code=204)
+
     # ─── Прогони ─────────────────────────────────────────────────────────────
     @app.get("/api/runs")
     def list_runs():
@@ -168,16 +197,56 @@ def create_app(store: Store | None = None, worker: Worker | None = None) -> Fast
     @app.post("/api/runs", status_code=201)
     def create_run(body: RunCreate):
         presets = config.load_presets()
-        if body.nomination not in presets:
+        preset = presets.get(body.nomination)
+        if not preset:
             raise HTTPException(400, f"Невідома номінація: {body.nomination}")
-        source = body.source.strip()
-        if not source:
-            raise HTTPException(400, "Вкажіть категорію або папку")
-        if body.source_type == "folder" and not Path(source).expanduser().is_dir():
-            raise HTTPException(400, f"Папку не знайдено: {source}")
-        name = body.name.strip() or f"{presets[body.nomination]['label']}: {source}"
+        if preset.get("campaign", config.DEFAULT_CAMPAIGN) != body.campaign:
+            raise HTTPException(400, "Пресет не належить до цього режиму")
+        source, options = body.source.strip(), {}
+        if body.source_type == "csv":
+            if body.campaign != "wlm":
+                raise HTTPException(400, "CSV-джерело доступне лише в режимі WLM")
+            from .sources import parse_wlm_csv
+            if body.csv_text:
+                text = body.csv_text
+            elif body.csv_path:
+                p = Path(body.csv_path).expanduser()
+                if not p.is_file():
+                    raise HTTPException(400, f"Файл не знайдено: {body.csv_path}")
+                text = p.read_text(encoding="utf-8-sig")
+                source = source or p.name
+            else:
+                raise HTTPException(400, "Оберіть CSV-файл")
+            try:
+                rows = parse_wlm_csv(text, body.oblast)
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+            if not rows:
+                raise HTTPException(400, "У CSV немає рядків" + (f" з monument_id «{body.oblast}-…»" if body.oblast.strip() else ""))
+            source = source or "wlm.csv"
+        else:
+            if body.campaign == "wlm":
+                raise HTTPException(400, "У режимі WLM джерело — CSV-файл")
+            if not source:
+                raise HTTPException(400, "Вкажіть категорію або папку")
+            if body.source_type == "folder" and not Path(source).expanduser().is_dir():
+                raise HTTPException(400, f"Папку не знайдено: {source}")
+        scope = f"{source}" + (f" · область {body.oblast.strip()}" if body.source_type == "csv" and body.oblast.strip() else "")
+        name = body.name.strip() or f"{preset['label']}: {scope}"
         run_id = store.create_run(name, body.nomination, body.source_type, source,
-                                  presets[body.nomination]["thresholds"])
+                                  preset["thresholds"], campaign=body.campaign, options=options)
+        if body.source_type == "csv":
+            # зберігаємо вже відфільтрований список, щоб прогін не залежав від вихідного файлу
+            up = store.path.parent / "uploads"
+            up.mkdir(parents=True, exist_ok=True)
+            dest = up / f"run_{run_id}.csv"
+            import csv as _csv
+            with dest.open("w", newline="", encoding="utf-8") as f:
+                w = _csv.DictWriter(f, fieldnames=["title", "monument_id", "categories"])
+                w.writeheader()
+                w.writerows(rows)
+            store.set_run_options(run_id, {"csv_path": str(dest), "oblast": body.oblast.strip(),
+                                           "rows": len(rows)})
         if body.start:
             worker.start(run_id, limit=body.limit)
         return run_or_404(run_id)
@@ -354,10 +423,11 @@ def create_app(store: Store | None = None, worker: Worker | None = None) -> Fast
 
         if format == "json":
             payload = {
-                "run": {k: run[k] for k in ("id", "name", "nomination", "source_type", "source")},
+                "run": {k: run[k] for k in ("id", "name", "campaign", "nomination", "source_type", "source")},
                 "thresholds": t.to_dict(),
                 "images": [{
                     "page_id": it["page_id"], "title": it["title"], "author": it["author"],
+                    "monument_id": it.get("monument_id"), "year": it.get("year"),
                     "verdict": it["verdict"], "auto_verdict": it["auto_verdict"],
                     "manual": it["manual"], "note": it["note"],
                     "reasons": [{k: v for k, v in r.items() if k != "of"} for r in it["reasons"]],
@@ -373,7 +443,7 @@ def create_app(store: Store | None = None, worker: Worker | None = None) -> Fast
                             headers=disposition("json"))
 
         buf = io.StringIO()
-        cols = ["file", "page_id", "author", "blur_score", "person_area", "sign_coverage",
+        cols = ["file", "monument_id", "build_year", "page_id", "author", "blur_score", "person_area", "sign_coverage",
                 "text_area", "text", "watermark",
                 "duplicate_of", "width", "height", "verdict", "auto_verdict", "manual",
                 "reasons", "note", "page_url", "local_path"]
@@ -381,7 +451,8 @@ def create_app(store: Store | None = None, worker: Worker | None = None) -> Fast
         w.writeheader()
         for it in items:
             dup = next((r.get("of_title") for r in it["reasons"] if r["code"] == "duplicate"), "")
-            w.writerow({"file": it["title"], "page_id": it["page_id"] or "", "author": it["author"] or "",
+            w.writerow({"file": it["title"], "monument_id": it.get("monument_id") or "",
+                        "build_year": it.get("year") or "", "page_id": it["page_id"] or "", "author": it["author"] or "",
                         "blur_score": it["blur"] if it["blur"] is not None else "",
                         "person_area": it["person_area"], "sign_coverage": it["sign"] if it["sign"] is not None else "",
                         "text_area": it["text_area"] if it.get("text_area") is not None else "",

@@ -661,5 +661,156 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(sorted(r["dirs"]), ["A", "B"])
 
 
+class TestCampaigns(unittest.TestCase):
+    """Режими WLE / WLM: CSV-джерело, чорний список, роки, дублі в межах пам'ятки."""
+
+    CSV = ("title,monument_id,categories\n"
+           "1.jpg,63-101-0001,Cat A\n"
+           "1_copy.jpg,63-101-0001,Cat A|Mass grave\n"
+           "1_other.jpg,63-101-0002,Cat B\n"
+           "blur.jpg,12-001-0003,Cat C\n"
+           "2.jpg,63-101-0004,Cat D\n")
+
+    def test_parse_csv_oblast_and_dedupe(self):
+        rows = sources.parse_wlm_csv(self.CSV, "63")
+        self.assertEqual([r["title"] for r in rows],
+                         ["File:1.jpg", "File:1 copy.jpg", "File:1 other.jpg", "File:2.jpg"])
+        self.assertEqual(len(sources.parse_wlm_csv(self.CSV, "")), 5)
+        merged = sources.parse_wlm_csv(self.CSV + "1.jpg,63-101-0001,Cat Z\n", "63")
+        self.assertEqual(merged[0]["categories"], "Cat A|Cat Z")
+        self.assertEqual(len(merged), 4)
+
+    def test_parse_csv_delimiters_and_errors(self):
+        semi = self.CSV.replace(",", ";")
+        self.assertEqual(len(sources.parse_wlm_csv("\ufeff" + semi, "63")), 4)
+        with self.assertRaises(ValueError) as cm:
+            sources.parse_wlm_csv("name,id\na,b\n")
+        self.assertIn("title", str(cm.exception))
+
+    def test_wlm_preset_matches_script(self):
+        p = config.load_presets()["wlm"]
+        t = Thresholds.from_dict(p["thresholds"])
+        self.assertEqual((t.blur_threshold, t.person_confidence, t.person_area), (60.0, 0.5, 0.25))
+        self.assertEqual((t.sign_method, t.sign_coverage, t.duplicate_distance), ("legacy", 0.45, 16))
+        self.assertEqual((t.year_cutoff, t.duplicate_scope), (1954, "monument"))
+        self.assertTrue(t.blacklist_enabled and t.year_enabled)
+        # режими не змішуються: у WLE немає WLM-фільтрів і пресет іншої кампанії
+        for k in ("quality", "quantity"):
+            self.assertEqual(config.load_presets()[k]["campaign"], "wle")
+            self.assertFalse(config.load_presets()[k]["thresholds"]["year_enabled"])
+
+    def test_blacklist_year_and_monument_scope(self):
+        t = Thresholds(blacklist_enabled=True, blacklist_categories="world war II graves\n\nMass Grave",
+                       year_enabled=True, year_cutoff=1954)
+        items = [item(1, categories="Foo|World War II graves in Ukraine", year=1900),
+                 item(2, categories="Bar", year=1955),
+                 item(3, categories="Bar", year=1954),       # межа не включена: > 1954
+                 item(4, categories="Bar", year=None)]       # рік невідомий — не відсіюємо
+        res = {e["id"]: [r["code"] for r in e["reasons"]] for e in evaluate(items, t)}
+        self.assertEqual(res, {1: ["blacklist"], 2: ["year"], 3: [], 4: []})
+        self.assertIn("build_year:1955", reasons_text(evaluate(items, t)[1]["reasons"]))
+        # вимкнений фільтр нічого не відсіює
+        self.assertEqual([e["reasons"] for e in evaluate(items, Thresholds())], [[], [], [], []])
+
+        h = "ff00ff00ff00ff00"
+        dups = [item(1, dhash=h, monument_id="m1"), item(2, dhash=h, monument_id="m2"),
+                item(3, dhash=h, monument_id="m1")]
+        d_mon = find_duplicates(dups, Thresholds(duplicate_scope="monument"))
+        self.assertEqual(set(d_mon), {3})               # 2 — інша пам'ятка, не дубль
+        self.assertEqual(set(find_duplicates(dups, Thresholds())), {2, 3})
+
+    def test_years_store_and_old_db_migration(self):
+        import sqlite3
+        tmp = tempfile.TemporaryDirectory()
+        path = Path(tmp.name) / "old.sqlite3"
+        con = sqlite3.connect(path)       # база до режимів: runs без campaign/options
+        con.executescript("""CREATE TABLE runs (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+            nomination TEXT NOT NULL, source_type TEXT NOT NULL, source TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'new', message TEXT, thresholds TEXT NOT NULL,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+            INSERT INTO runs(name,nomination,source_type,source,thresholds,created_at,updated_at)
+            VALUES ('старий','quality','folder','/x','{}','t','t');""")
+        con.commit(); con.close()
+        st = Store(path)
+        run = st.list_runs()[0]
+        self.assertEqual((run["campaign"], run["options"]), ("wle", {}))
+        out = st.load_years({"63-1": 1890, "63-2": "1960", "63-3": "abc", "63-4": 5, "": 1900})
+        self.assertEqual((out["loaded"], out["skipped"], out["total"]), (2, 3, 2))
+        st.load_years({"63-9": 1800})                      # додає, а не замінює
+        self.assertEqual(st.years()["63-1"], 1890)
+        self.assertEqual(len(st.years()), 3)
+        st.close(); tmp.cleanup()
+
+    def test_api_wlm_flow(self):
+        from fastapi.testclient import TestClient
+        from wle_filter.server import create_app
+        tmp = tempfile.TemporaryDirectory()
+        photos = Path(tmp.name) / "photos"
+        make_folder(photos)
+        store = Store(Path(tmp.name) / "db.sqlite3")
+        worker = Worker(store, yolo_loader=lambda: fake_yolo([]), ocr_loader=None)
+        client = TestClient(create_app(store, worker))
+        files = {"1.jpg": "A/1.jpg", "1 copy.jpg": "A/1_copy.jpg", "1 other.jpg": "B/1_other.jpg",
+                 "2.jpg": "B/2.jpg"}
+
+        def fake_list(csv_path, oblast="", limit=None, session=None, progress=None):
+            rows = sources.parse_wlm_csv(Path(csv_path).read_text(encoding="utf-8"), oblast)
+            return [{"key": r["title"], "title": r["title"], "page_id": None, "author": "x",
+                     "timestamp": None, "width": 256, "height": 256, "mime": None, "thumb_url": None,
+                     "page_url": None, "local_path": str(photos / files[r["title"][5:]]),
+                     "monument_id": r["monument_id"], "categories": r["categories"]} for r in rows]
+
+        body = {"campaign": "wlm", "nomination": "wlm", "source_type": "csv", "source": "x.csv",
+                "csv_text": self.CSV, "oblast": "63"}
+        # помилки валідації
+        self.assertEqual(client.post("/api/runs", json={**body, "nomination": "quality"}).status_code, 400)
+        self.assertEqual(client.post("/api/runs", json={**body, "csv_text": "a,b\n1,2"}).status_code, 400)
+        self.assertEqual(client.post("/api/runs", json={**body, "oblast": "99"}).status_code, 400)
+        self.assertEqual(client.post("/api/runs", json={"campaign": "wle", "nomination": "quality",
+                                                         "source_type": "csv", "csv_text": self.CSV}).status_code, 400)
+        self.assertEqual(client.post("/api/runs", json={**body, "source_type": "commons",
+                                                         "source": "Cat"}).status_code, 400)
+        with patch("wle_filter.worker.sources.list_wlm_csv", fake_list):
+            r = client.post("/api/runs", json=body)
+            self.assertEqual(r.status_code, 201, r.text)
+            rid = r.json()["id"]
+            worker.join(rid, 30)
+        run = client.get(f"/api/runs/{rid}").json()
+        self.assertEqual((run["campaign"], run["total"], run["options"]["oblast"]), ("wlm", 4, "63"))
+        self.assertTrue(Path(run["options"]["csv_path"]).exists())
+
+        def res(**kw):
+            return client.post(f"/api/runs/{rid}/results", json={"view": "all", **kw}).json()
+
+        base = res()
+        codes = {i["title"]: [r["code"] for r in i["reasons"]] for i in base["items"]}
+        # 1_copy: категорія «Mass grave» + дубль 1.jpg (та сама пам'ятка); 1_other — інша пам'ятка, не дубль
+        self.assertEqual(codes["File:1 copy.jpg"], ["blacklist", "duplicate"])
+        self.assertEqual(codes["File:1 other.jpg"], [])
+        self.assertEqual(client.get("/api/info").json()["years_loaded"], 0)
+
+        # роки підвантажуються «на льоту» і одразу змінюють вердикти
+        up = client.post("/api/years", json={"data": {"63-101-0001": 1890, "63-101-0004": 1971}})
+        self.assertEqual(up.json()["loaded"], 2)
+        after = res()
+        codes = {i["title"]: [r["code"] for r in i["reasons"]] for i in after["items"]}
+        self.assertEqual(codes["File:2.jpg"], ["year"])
+        self.assertEqual(codes["File:1.jpg"], [])
+        self.assertEqual(next(i for i in after["items"] if i["title"] == "File:2.jpg")["year"], 1971)
+        t = {**after["thresholds"], "year_cutoff": 1990}
+        self.assertEqual(next(i for i in res(thresholds=t)["items"] if i["title"] == "File:2.jpg")["reasons"], [])
+        self.assertEqual(after["summary"]["reasons"]["year"], 1)
+        self.assertEqual(client.get("/api/years").json()["total"], 2)
+        self.assertEqual(client.post("/api/years", json={"data": {}}).status_code, 400)
+
+        # експорт містить monument_id і рік
+        text = client.get(f"/api/runs/{rid}/export?format=csv").text
+        self.assertIn("monument_id", text)
+        self.assertIn("build_year:1971", text)
+        self.assertEqual(client.delete("/api/years").status_code, 204)
+        self.assertEqual(client.get("/api/years").json()["total"], 0)
+        store.close(); tmp.cleanup()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

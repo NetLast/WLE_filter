@@ -23,6 +23,8 @@ REASON_LABELS = {
     "watermark": "Вотермарка",
     "duplicate": "Дублікат",
     "mpx": "Мала роздільність",
+    "blacklist": "Чорний список",
+    "year": "Новіша за межу року",
     "error": "Помилка",
 }
 
@@ -71,7 +73,31 @@ def item_reasons(item: dict, t: Thresholds) -> list[dict]:
             mpx = w * h / 1e6
             if mpx < t.min_mpx:
                 reasons.append({"code": "mpx", "value": round(mpx, 2)})
+    reasons += meta_reasons(item, t)
     return reasons
+
+
+def blacklist_hit(categories: str | None, blacklist: str) -> str | None:
+    """Перший запис чорного списку, що є підрядком у категоріях (без урахування регістру)."""
+    low = (categories or "").lower()
+    for entry in blacklist.splitlines():
+        entry = entry.strip().lower()
+        if entry and entry in low:
+            return entry
+    return None
+
+
+def meta_reasons(item: dict, t: Thresholds) -> list[dict]:
+    """Причини за даними CSV (WLM): не залежать від аналізу зображення."""
+    out = []
+    if t.blacklist_enabled:
+        hit = blacklist_hit(item.get("categories"), t.blacklist_categories)
+        if hit:
+            out.append({"code": "blacklist", "value": hit})
+    year = item.get("year")
+    if t.year_enabled and year is not None and year > t.year_cutoff:
+        out.append({"code": "year", "value": year})
+    return out
 
 
 def _hash_to_int(h: str | None) -> int | None:
@@ -98,7 +124,12 @@ def find_duplicates(items: list[dict], t: Thresholds) -> dict[int, tuple[int, in
         hv = _hash_to_int(it.get(t.hash_type))
         if hv is None:
             continue
-        key = (it.get("author") or "") if t.duplicate_scope == "author" else ""
+        if t.duplicate_scope == "author":
+            key = it.get("author") or ""
+        elif t.duplicate_scope == "monument":
+            key = it.get("monument_id") or ""
+        else:
+            key = ""
         groups[key].append((it["id"], hv))
 
     result: dict[int, tuple[int, int]] = {}
@@ -134,7 +165,7 @@ def evaluate(items: Iterable[dict], t: Thresholds, pairs=None) -> list[dict]:
     out = []
     for it in items:
         if it.get("status") == "error":
-            reasons = [{"code": "error", "value": it.get("error") or ""}]
+            reasons = [{"code": "error", "value": it.get("error") or ""}] + meta_reasons(it, t)
             auto = "error"
         elif it.get("status") != "done" or it.get("outdated"):
             reasons, auto = [], "pending"
@@ -174,6 +205,10 @@ def reasons_text(reasons: list[dict]) -> str:
             parts.append(f"{c}:{float(v):.1%}")
         elif c == "duplicate":
             parts.append(f"duplicate:similar(dist={v})")
+        elif c == "year":
+            parts.append(f"build_year:{v}")
+        elif c == "blacklist":
+            parts.append(f"blacklist:{v}")
         else:
             parts.append(f"{c}:{v}")
     return " | ".join(parts)

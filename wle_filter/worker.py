@@ -59,7 +59,12 @@ class Worker:
         try:
             if run["total"] == 0:
                 store.set_run_status(run_id, "listing", "Отримую список фото…")
-                if run["source_type"] == "commons":
+                if run["source_type"] == "csv":
+                    opts = run.get("options") or {}
+                    cands = sources.list_wlm_csv(
+                        opts["csv_path"], opts.get("oblast", ""), limit=limit,
+                        progress=lambda m: store.set_run_status(run_id, "listing", m))
+                elif run["source_type"] == "commons":
                     cands = sources.list_commons_category(
                         run["source"], limit=limit,
                         progress=lambda m: store.set_run_status(run_id, "listing", m))
