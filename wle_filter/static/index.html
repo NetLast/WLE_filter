@@ -74,7 +74,8 @@ aside{background:var(--background-color-base);border-right:1px solid var(--borde
 .simple-sum{list-style:none;margin:6px 0 12px;padding:0;display:flex;flex-direction:column;gap:4px;font-size:.875rem}
 .simple-sum li{display:flex;gap:8px;align-items:baseline}
 .simple-sum .ok{color:var(--color-success,#14866d)}.simple-sum .no{color:var(--color-subtle,#72777d)}
-.uimode{margin:4px 0 10px}
+#uiSeg{flex:none;display:inline-flex;width:auto}
+#uiSeg .cdx-toggle-button{flex:none;padding-inline:12px}
 .fhead{display:flex;align-items:center;gap:8px;min-height:32px}
 .fhead .cdx-toggle-switch{flex:1;margin:0}
 .fhead .cdx-label__label__text{font-size:var(--font-size-medium,1rem)}
@@ -334,6 +335,7 @@ dialog.wle-dialog .cdx-dialog__header,dialog.wle-dialog .cdx-dialog__footer{flex
       <button class="menu-item danger" id="deleteRun">Видалити прогін</button>
     </div>
   </div>
+  <div class="cdx-toggle-button-group" id="uiSeg" role="group" aria-label="Режим налаштувань"></div>
   <button id="themeBtn" class="cdx-button cdx-button--weight-quiet" aria-label="Тема"></button>
 </header>
 
@@ -541,6 +543,25 @@ async function selectRun(id) {
   await refresh();
 }
 
+function renderUiSeg() {
+  $("#uiSeg").innerHTML =
+    toggleBtn("Простий", S.ui === "simple", 'data-ui="simple" title="Пороги вже застосовані, лише картки-вкладки й сітка фото"') +
+    toggleBtn("Розширений", S.ui === "advanced", 'data-ui="advanced" title="Усі пороги, повзунки, пошук і сортування"');
+}
+  $("#uiSeg").addEventListener("click", e => {
+    const b = e.target.closest("[data-ui]"); if (!b) return;
+    S.ui = b.dataset.ui;
+    try { localStorage.setItem("wle-ui", S.ui); } catch {}
+    setPressed($("#uiSeg"), "ui", S.ui); syncAside();
+    document.body.classList.toggle("simple", S.ui === "simple");
+    if (S.run && S.ui === "simple" && (S.reason || S.search || S.sort !== "seq")) {   // сховані контролі не мають впливати на перегляд
+      S.reason = null; S.search = ""; S.sort = "seq";
+      $("#search").value = ""; $("#sort").value = "seq"; refresh();
+    }
+  });
+renderUiSeg();
+document.body.classList.toggle("simple", S.ui === "simple");
+
 function renderCampSeg() {
   $("#campSeg").innerHTML = Object.entries(CAMPS).map(([k, [l, t]]) =>
     toggleBtn(l, k === S.campaign, `data-camp="${k}" title="${t}"`)).join("");
@@ -695,10 +716,6 @@ function renderAside() {
     <div class="drawer-head"><h2 class="section-title">Чутливість</h2>
       <button class="cdx-button cdx-button--weight-quiet" id="drawerClose" aria-label="Закрити панель">✕</button></div>
     <h2 class="section-title">Чутливість</h2>
-    <div class="cdx-toggle-button-group uimode" id="uiSeg" role="group" aria-label="Режим налаштувань">
-      ${toggleBtn("Простий", S.ui === "simple", 'data-ui="simple" title="Налаштування пресету вже застосовані; доступна лише мінімальна роздільність"')}
-      ${toggleBtn("Розширений", S.ui === "advanced", 'data-ui="advanced" title="Усі пороги та повзунки"')}
-    </div>
     <div class="preset-row">
       <select id="presetSel" class="cdx-select" title="Пресет номінації">${presetOpts}</select>
       <button class="cdx-button" id="applyPreset" title="Застосувати пороги пресету">Застосувати</button>
@@ -758,16 +775,6 @@ function renderAside() {
     const pr = paramDef(el.dataset.num); let v = +el.value; if (pr.pct) v /= 100;
     setT(pr.k, Math.min(pr.max, Math.max(pr.min, v)));
   }));
-  $("#uiSeg").addEventListener("click", e => {
-    const b = e.target.closest("[data-ui]"); if (!b) return;
-    S.ui = b.dataset.ui;
-    try { localStorage.setItem("wle-ui", S.ui); } catch {}
-    setPressed($("#uiSeg"), "ui", S.ui); syncAside();
-    if (S.ui === "simple" && (S.reason || S.search || S.sort !== "seq")) {   // сховані контролі не мають впливати на перегляд
-      S.reason = null; S.search = ""; S.sort = "seq";
-      $("#search").value = ""; $("#sort").value = "seq"; refresh();
-    }
-  });
   aside.querySelectorAll("[data-sel]").forEach(el => el.addEventListener("change", () => setT(el.dataset.sel, el.value)));
   aside.querySelectorAll("[data-ta]").forEach(el => el.addEventListener("input", () => setT(el.dataset.ta, el.value)));
   $("#yearsLoad")?.addEventListener("click", () => $("#yearsFile").click());
