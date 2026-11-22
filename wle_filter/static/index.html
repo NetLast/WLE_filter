@@ -99,6 +99,11 @@ canvas.hist{width:100%;height:46px;display:block;cursor:crosshair;margin-top:4px
 section.main{padding:16px 20px;min-width:0}
 .stats{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
 .stat{background:var(--background-color-base);border:1px solid var(--border-color-subtle);border-radius:var(--border-radius-base,2px);padding:6px 14px;min-width:100px}
+button.stat{font:inherit;text-align:left;cursor:pointer;color:inherit}
+button.stat:hover{border-color:var(--border-color-interactive,#72777d)}
+button.stat.active{border-color:var(--border-color-progressive,#36c);box-shadow:inset 0 -3px 0 var(--border-color-progressive,#36c)}
+/* простий режим: тільки картки-вкладки й сітка фото */
+body.simple .cdx-tabs,body.simple #chips,body.simple #searchWrap,body.simple #sort,body.simple #cardSize,body.simple #bulkMenu{display:none}
 .stat b{display:block;font-size:var(--font-size-xx-large,1.5rem);line-height:1.3;font-variant-numeric:tabular-nums;color:var(--color-emphasized)}
 .stat.ok b{color:var(--color-success)} .stat.bad b{color:var(--color-error)} .stat.man b{color:var(--color-progressive)} .stat.err b{color:var(--color-subtle)}
 .cdx-tabs{margin-bottom:12px}
@@ -699,10 +704,10 @@ function renderAside() {
       <button class="cdx-button" id="applyPreset" title="Застосувати пороги пресету">Застосувати</button>
     </div>
     <p class="preset-desc muted small" id="presetDesc">${esc(p?.description || "")}</p>
-    <div class="simple-only"><div class="small muted">Діючі налаштування (з пресету; змінити їх можна в розширеному режимі):</div>
+    <div class="simple-only"><div class="small muted">Діючі налаштування (змінити їх можна в розширеному режимі):</div>
       <ul class="simple-sum" id="simpleSum"></ul></div>
     ${activeFilters().map(f => `
-      <div class="filter${f.key === "min_mpx" ? " keep always-on" : ""}" id="f-${f.key}">
+      <div class="filter${f.key === "min_mpx" ? " always-on" : ""}" id="f-${f.key}">
         <div class="fhead">
           <span class="cdx-toggle-switch">
             <input id="sw-${f.key}" class="cdx-toggle-switch__input" type="checkbox" role="switch" data-en="${enabledKey(f)}">
@@ -758,6 +763,10 @@ function renderAside() {
     S.ui = b.dataset.ui;
     try { localStorage.setItem("wle-ui", S.ui); } catch {}
     setPressed($("#uiSeg"), "ui", S.ui); syncAside();
+    if (S.ui === "simple" && (S.reason || S.search || S.sort !== "seq")) {   // сховані контролі не мають впливати на перегляд
+      S.reason = null; S.search = ""; S.sort = "seq";
+      $("#search").value = ""; $("#sort").value = "seq"; refresh();
+    }
   });
   aside.querySelectorAll("[data-sel]").forEach(el => el.addEventListener("change", () => setT(el.dataset.sel, el.value)));
   aside.querySelectorAll("[data-ta]").forEach(el => el.addEventListener("input", () => setT(el.dataset.ta, el.value)));
@@ -817,6 +826,7 @@ function simpleSummary() {
       ? `Таблички: написи ≥ ${pct(t.sign_text_area)} або табличка з постаментом ≥ ${pct(t.sign_object_area)}`
       : `Таблички: покриття текстом > ${pct(t.sign_coverage)}`),
     row(t.watermark_enabled, "Вотермарка"),
+    row(t.min_mpx_enabled, `Мін. роздільність: від ${fmtNum(t.min_mpx)} Мп`),
     row(t.duplicate_enabled, `Дублі: відстань ≤ ${t.duplicate_distance}` + ({author: ", в межах автора", monument: ", в межах пам'ятки"}[t.duplicate_scope] || "")),
   ];
   if (runCamp(S.run) === "wlm") {
@@ -829,6 +839,7 @@ function simpleSummary() {
 function syncAside() {
   const aside = $("#aside"); if (!aside) return;
   aside.classList.toggle("ui-simple", S.ui === "simple");
+  document.body.classList.toggle("simple", S.ui === "simple");
   const sum = $("#simpleSum"); if (sum) sum.innerHTML = simpleSummary();
   activeFilters().forEach(f => {
     const on = !!S.t[enabledKey(f)];
@@ -956,13 +967,16 @@ async function refresh({keepCount=false, summaryOnly=false, append=false} = {}) 
 
 function renderStats() {
   const s = S.summary;
-  $("#stats").innerHTML = `
-    <div class="stat"><b>${fmtInt(s.total)}</b><span class="muted small">усього</span></div>
-    <div class="stat ok"><b>${fmtInt(s.ok)}</b><span class="muted small">пройшли</span></div>
-    <div class="stat bad"><b>${fmtInt(s.flagged)}</b><span class="muted small">відсіяно</span></div>
-    <div class="stat man"><b>${fmtInt(s.manual)}</b><span class="muted small">перевірено вручну${s.overridden ? ` · ${s.overridden} змінено` : ""}</span></div>
-    ${s.error ? `<div class="stat err"><b>${fmtInt(s.error)}</b><span class="muted small">помилки</span></div>` : ""}
-    ${s.pending ? `<div class="stat"><b>${fmtInt(s.pending)}</b><span class="muted small">в черзі</span></div>` : ""}`;
+  // картки — це і є вкладки: клік перемикає перегляд
+  const card = (view, cls, n, label) =>
+    `<button type="button" class="stat ${cls}${S.view === view ? " active" : ""}" data-view="${view}" aria-pressed="${S.view === view}"><b>${fmtInt(n)}</b><span class="muted small">${label}</span></button>`;
+  $("#stats").innerHTML =
+    card("all", "", s.total, "усього") + card("ok", "ok", s.ok, "пройшли") + card("flagged", "bad", s.flagged, "відсіяно") +
+    card("manual", "man", s.manual, `перевірено вручну${s.overridden ? ` · ${s.overridden} змінено` : ""}`) +
+    (s.error ? card("error", "err", s.error, "помилки") : "") +
+    (s.pending ? card("pending", "", s.pending, "в черзі") : "");
+  $("#stats").onclick = e => { const b = e.target.closest("[data-view]"); if (!b) return;
+    S.view = b.dataset.view; if (!["flagged","all","manual"].includes(S.view)) S.reason = null; refresh(); };
   Object.entries(s.reasons).forEach(([k, n]) => { const b = $("#cnt-" + k); if (b) b.textContent = n; });
 }
 
