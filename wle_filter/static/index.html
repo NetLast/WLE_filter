@@ -36,8 +36,13 @@ header{position:sticky;top:0;z-index:20;background:var(--background-color-base);
   display:flex;align-items:center;gap:12px;padding:8px 16px;min-height:52px}
 .brand{font-weight:700;font-size:var(--font-size-large,1.125rem);display:flex;align-items:center;gap:8px;white-space:nowrap;color:var(--color-emphasized)}
 .brand .dot{width:12px;height:12px;border-radius:50%;background:var(--background-color-progressive)}
-#campSeg{flex:none;display:inline-flex;width:auto}
-#campSeg .cdx-toggle-button{flex:none;min-width:56px;padding-inline:14px}
+#campSeg,#uiSeg{flex:none}
+.hover-menu:not(.nohover):hover .menu-list,.hover-menu:has(:focus-visible) .menu-list{display:block}
+.hover-menu .menu-list{top:100%;min-width:260px}
+.hover-menu .menu-item{white-space:nowrap}
+.hover-menu .menu-list.left{left:0;right:auto}
+.menu-item.current{font-weight:700}
+.menu-item.current::before{content:"✓ "}
 #runSelect{flex:0 1 380px;min-width:0;max-width:420px}
 #newRunBtn,#pauseBtn,#resumeBtn,#exportMenu,#runMenu,#themeBtn{flex:none}
 .run-progress{flex:1 1 260px;display:flex;flex-direction:column;justify-content:center;gap:4px;min-width:160px;max-width:480px}
@@ -74,8 +79,7 @@ aside{background:var(--background-color-base);border-right:1px solid var(--borde
 .simple-sum{list-style:none;margin:6px 0 12px;padding:0;display:flex;flex-direction:column;gap:4px;font-size:.875rem}
 .simple-sum li{display:flex;gap:8px;align-items:baseline}
 .simple-sum .ok{color:var(--color-success,#14866d)}.simple-sum .no{color:var(--color-subtle,#72777d)}
-#uiSeg{flex:none;display:inline-flex;width:auto}
-#uiSeg .cdx-toggle-button{flex:none;padding-inline:12px}
+
 .fhead{display:flex;align-items:center;gap:8px;min-height:32px}
 .fhead .cdx-toggle-switch{flex:1;margin:0}
 .fhead .cdx-label__label__text{font-size:var(--font-size-medium,1rem)}
@@ -304,7 +308,13 @@ dialog.wle-dialog .cdx-dialog__header,dialog.wle-dialog .cdx-dialog__footer{flex
 
 <header>
   <div class="brand"><span class="dot"></span><span class="brand-text">Wiki Loves Filter</span></div>
-  <div class="cdx-toggle-button-group" id="campSeg" role="group" aria-label="Режим"></div>
+  <div class="menu hover-menu" id="campSeg">
+    <button type="button" class="cdx-button" id="campBtn" aria-haspopup="true" title="Конкурс"></button>
+    <div class="menu-list left" role="menu">
+      <button class="menu-item" role="menuitem" data-camp="wle">WLE — Wiki Loves Earth</button>
+      <button class="menu-item" role="menuitem" data-camp="wlm">WLM — Wiki Loves Monuments</button>
+    </div>
+  </div>
   <select id="runSelect" class="cdx-select" title="Прогін"></select>
   <button id="newRunBtn" class="cdx-button cdx-button--action-progressive cdx-button--weight-primary" aria-label="Новий прогін">+<span class="lbl-full"> Новий прогін</span><span class="lbl-short"> Прогін</span></button>
   <div class="run-progress">
@@ -335,7 +345,13 @@ dialog.wle-dialog .cdx-dialog__header,dialog.wle-dialog .cdx-dialog__footer{flex
       <button class="menu-item danger" id="deleteRun">Видалити прогін</button>
     </div>
   </div>
-  <div class="cdx-toggle-button-group" id="uiSeg" role="group" aria-label="Режим налаштувань"></div>
+  <div class="menu hover-menu" id="uiSeg">
+    <button type="button" class="cdx-button" id="uiBtn" aria-haspopup="true" title="Режим інтерфейсу"></button>
+    <div class="menu-list" role="menu">
+      <button class="menu-item" role="menuitem" data-ui="simple" title="Пороги вже застосовані, лише картки-вкладки й сітка фото">Простий</button>
+      <button class="menu-item" role="menuitem" data-ui="advanced" title="Усі пороги, повзунки, пошук і сортування">Розширений</button>
+    </div>
+  </div>
   <button id="themeBtn" class="cdx-button cdx-button--weight-quiet" aria-label="Тема"></button>
 </header>
 
@@ -451,6 +467,7 @@ const REASONS = {blur:"Розмите", person:"Людина", sign:"Табли�
 const STATUS = {new:"новий", listing:"отримую список", running:"обробка", paused:"на паузі", done:"готово", failed:"помилка"};
 
 const $ = (s, el=document) => el.querySelector(s);
+const $$ = (s, el=document) => [...el.querySelectorAll(s)];
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const fmtPct = v => (v*100).toFixed(v < 0.1 ? 1 : 0) + "%";
 const fmtNum = v => v == null ? "—" : (v >= 100 ? Math.round(v).toLocaleString("uk-UA") : (+v).toFixed(v < 1 ? 2 : 1));
@@ -544,15 +561,14 @@ async function selectRun(id) {
 }
 
 function renderUiSeg() {
-  $("#uiSeg").innerHTML =
-    toggleBtn("Простий", S.ui === "simple", 'data-ui="simple" title="Пороги вже застосовані, лише картки-вкладки й сітка фото"') +
-    toggleBtn("Розширений", S.ui === "advanced", 'data-ui="advanced" title="Усі пороги, повзунки, пошук і сортування"');
+  $("#uiBtn").textContent = (S.ui === "simple" ? "Простий" : "Розширений") + " ▾";
+  $$("#uiSeg [data-ui]").forEach(b => b.classList.toggle("current", b.dataset.ui === S.ui));
 }
   $("#uiSeg").addEventListener("click", e => {
     const b = e.target.closest("[data-ui]"); if (!b) return;
     S.ui = b.dataset.ui;
     try { localStorage.setItem("wle-ui", S.ui); } catch {}
-    setPressed($("#uiSeg"), "ui", S.ui); syncAside();
+    renderUiSeg(); syncAside();
     document.body.classList.toggle("simple", S.ui === "simple");
     if (S.run && S.ui === "simple" && (S.reason || S.search || S.sort !== "seq")) {   // сховані контролі не мають впливати на перегляд
       S.reason = null; S.search = ""; S.sort = "seq";
@@ -563,8 +579,8 @@ renderUiSeg();
 document.body.classList.toggle("simple", S.ui === "simple");
 
 function renderCampSeg() {
-  $("#campSeg").innerHTML = Object.entries(CAMPS).map(([k, [l, t]]) =>
-    toggleBtn(l, k === S.campaign, `data-camp="${k}" title="${t}"`)).join("");
+  $("#campBtn").textContent = CAMPS[S.campaign][0] + " ▾";
+  $$("#campSeg [data-camp]").forEach(b => b.classList.toggle("current", b.dataset.camp === S.campaign));
   document.title = `${CAMPS[S.campaign][0]} Filter`;
 }
 $("#campSeg").addEventListener("click", async e => {
@@ -1369,7 +1385,12 @@ function bindMenu(m) {
   m.querySelector("button").addEventListener("click", e => { e.stopPropagation(); document.querySelectorAll(".menu.open").forEach(x => x !== m && x.classList.remove("open")); m.classList.toggle("open"); });
 }
 document.addEventListener("click", () => document.querySelectorAll(".menu.open").forEach(m => m.classList.remove("open")));
-bindMenu($("#exportMenu")); bindMenu($("#runMenu"));
+bindMenu($("#exportMenu")); bindMenu($("#runMenu")); bindMenu($("#campSeg")); bindMenu($("#uiSeg"));
+// меню конкурсу й режиму відкриваються при наведенні; після вибору пункту згортаються, поки курсор не піде геть
+$$(".hover-menu").forEach(m => {
+  m.addEventListener("click", e => { if (e.target.closest(".menu-item")) { m.classList.add("nohover"); m.classList.remove("open"); document.activeElement?.blur(); } });
+  m.addEventListener("mouseleave", () => m.classList.remove("nohover"));
+});
 $("#exportMenu").addEventListener("click", async e => {
   const b = e.target.closest("[data-export]"); if (!b) return;
   await saveThresholds();   // експорт використовує збережені пороги
