@@ -36,8 +36,13 @@ header{position:sticky;top:0;z-index:20;background:var(--background-color-base);
   display:flex;align-items:center;gap:12px;padding:8px 16px;min-height:52px}
 .brand{font-weight:700;font-size:var(--font-size-large,1.125rem);display:flex;align-items:center;gap:8px;white-space:nowrap;color:var(--color-emphasized)}
 .brand .dot{width:12px;height:12px;border-radius:50%;background:var(--background-color-progressive)}
-#campSeg{flex:none;display:inline-flex;width:auto}
-#campSeg .cdx-toggle-button{flex:none;min-width:56px;padding-inline:14px}
+#campSeg,#uiSeg{flex:none}
+.hover-menu:not(.nohover):hover .menu-list,.hover-menu:has(:focus-visible) .menu-list{display:block}
+.hover-menu .menu-list{top:100%;min-width:260px}
+.hover-menu .menu-item{white-space:nowrap}
+.hover-menu .menu-list.left{left:0;right:auto}
+.menu-item.current{font-weight:700}
+.menu-item.current::before{content:"✓ "}
 #runSelect{flex:0 1 380px;min-width:0;max-width:420px}
 #newRunBtn,#pauseBtn,#resumeBtn,#exportMenu,#runMenu,#themeBtn{flex:none}
 .run-progress{flex:1 1 260px;display:flex;flex-direction:column;justify-content:center;gap:4px;min-width:160px;max-width:480px}
@@ -74,7 +79,7 @@ aside{background:var(--background-color-base);border-right:1px solid var(--borde
 .simple-sum{list-style:none;margin:6px 0 12px;padding:0;display:flex;flex-direction:column;gap:4px;font-size:.875rem}
 .simple-sum li{display:flex;gap:8px;align-items:baseline}
 .simple-sum .ok{color:var(--color-success,#14866d)}.simple-sum .no{color:var(--color-subtle,#72777d)}
-.uimode{margin:4px 0 10px}
+
 .fhead{display:flex;align-items:center;gap:8px;min-height:32px}
 .fhead .cdx-toggle-switch{flex:1;margin:0}
 .fhead .cdx-label__label__text{font-size:var(--font-size-medium,1rem)}
@@ -99,6 +104,11 @@ canvas.hist{width:100%;height:46px;display:block;cursor:crosshair;margin-top:4px
 section.main{padding:16px 20px;min-width:0}
 .stats{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
 .stat{background:var(--background-color-base);border:1px solid var(--border-color-subtle);border-radius:var(--border-radius-base,2px);padding:6px 14px;min-width:100px}
+button.stat{font:inherit;text-align:left;cursor:pointer;color:inherit}
+button.stat:hover{border-color:var(--border-color-interactive,#72777d)}
+button.stat.active{border-color:var(--border-color-progressive,#36c);box-shadow:inset 0 -3px 0 var(--border-color-progressive,#36c)}
+/* простий режим: тільки картки-вкладки й сітка фото */
+body.simple .cdx-tabs,body.simple #chips,body.simple #searchWrap,body.simple #sort,body.simple #cardSize,body.simple #bulkMenu{display:none}
 .stat b{display:block;font-size:var(--font-size-xx-large,1.5rem);line-height:1.3;font-variant-numeric:tabular-nums;color:var(--color-emphasized)}
 .stat.ok b{color:var(--color-success)} .stat.bad b{color:var(--color-error)} .stat.man b{color:var(--color-progressive)} .stat.err b{color:var(--color-subtle)}
 .cdx-tabs{margin-bottom:12px}
@@ -298,7 +308,13 @@ dialog.wle-dialog .cdx-dialog__header,dialog.wle-dialog .cdx-dialog__footer{flex
 
 <header>
   <div class="brand"><span class="dot"></span><span class="brand-text">Wiki Loves Filter</span></div>
-  <div class="cdx-toggle-button-group" id="campSeg" role="group" aria-label="Режим"></div>
+  <div class="menu hover-menu" id="campSeg">
+    <button type="button" class="cdx-button" id="campBtn" aria-haspopup="true" title="Конкурс"></button>
+    <div class="menu-list left" role="menu">
+      <button class="menu-item" role="menuitem" data-camp="wle">WLE — Wiki Loves Earth</button>
+      <button class="menu-item" role="menuitem" data-camp="wlm">WLM — Wiki Loves Monuments</button>
+    </div>
+  </div>
   <select id="runSelect" class="cdx-select" title="Прогін"></select>
   <button id="newRunBtn" class="cdx-button cdx-button--action-progressive cdx-button--weight-primary" aria-label="Новий прогін">+<span class="lbl-full"> Новий прогін</span><span class="lbl-short"> Прогін</span></button>
   <div class="run-progress">
@@ -327,6 +343,13 @@ dialog.wle-dialog .cdx-dialog__header,dialog.wle-dialog .cdx-dialog__footer{flex
       <button class="menu-item" id="reanalyzeRun">Переаналізувати всі фото</button>
       <hr class="sep">
       <button class="menu-item danger" id="deleteRun">Видалити прогін</button>
+    </div>
+  </div>
+  <div class="menu hover-menu" id="uiSeg">
+    <button type="button" class="cdx-button" id="uiBtn" aria-haspopup="true" title="Режим інтерфейсу"></button>
+    <div class="menu-list" role="menu">
+      <button class="menu-item" role="menuitem" data-ui="simple" title="Пороги вже застосовані, лише картки-вкладки й сітка фото">Простий</button>
+      <button class="menu-item" role="menuitem" data-ui="advanced" title="Усі пороги, повзунки, пошук і сортування">Розширений</button>
     </div>
   </div>
   <button id="themeBtn" class="cdx-button cdx-button--weight-quiet" aria-label="Тема"></button>
@@ -444,6 +467,7 @@ const REASONS = {blur:"Розмите", person:"Людина", sign:"Табли�
 const STATUS = {new:"новий", listing:"отримую список", running:"обробка", paused:"на паузі", done:"готово", failed:"помилка"};
 
 const $ = (s, el=document) => el.querySelector(s);
+const $$ = (s, el=document) => [...el.querySelectorAll(s)];
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const fmtPct = v => (v*100).toFixed(v < 0.1 ? 1 : 0) + "%";
 const fmtNum = v => v == null ? "—" : (v >= 100 ? Math.round(v).toLocaleString("uk-UA") : (+v).toFixed(v < 1 ? 2 : 1));
@@ -536,9 +560,27 @@ async function selectRun(id) {
   await refresh();
 }
 
+function renderUiSeg() {
+  $("#uiBtn").textContent = (S.ui === "simple" ? "Простий" : "Розширений") + " ▾";
+  $$("#uiSeg [data-ui]").forEach(b => b.classList.toggle("current", b.dataset.ui === S.ui));
+}
+  $("#uiSeg").addEventListener("click", e => {
+    const b = e.target.closest("[data-ui]"); if (!b) return;
+    S.ui = b.dataset.ui;
+    try { localStorage.setItem("wle-ui", S.ui); } catch {}
+    renderUiSeg(); syncAside();
+    document.body.classList.toggle("simple", S.ui === "simple");
+    if (S.run && S.ui === "simple" && (S.reason || S.search || S.sort !== "seq")) {   // сховані контролі не мають впливати на перегляд
+      S.reason = null; S.search = ""; S.sort = "seq";
+      $("#search").value = ""; $("#sort").value = "seq"; refresh();
+    }
+  });
+renderUiSeg();
+document.body.classList.toggle("simple", S.ui === "simple");
+
 function renderCampSeg() {
-  $("#campSeg").innerHTML = Object.entries(CAMPS).map(([k, [l, t]]) =>
-    toggleBtn(l, k === S.campaign, `data-camp="${k}" title="${t}"`)).join("");
+  $("#campBtn").textContent = CAMPS[S.campaign][0] + " ▾";
+  $$("#campSeg [data-camp]").forEach(b => b.classList.toggle("current", b.dataset.camp === S.campaign));
   document.title = `${CAMPS[S.campaign][0]} Filter`;
 }
 $("#campSeg").addEventListener("click", async e => {
@@ -690,19 +732,15 @@ function renderAside() {
     <div class="drawer-head"><h2 class="section-title">Чутливість</h2>
       <button class="cdx-button cdx-button--weight-quiet" id="drawerClose" aria-label="Закрити панель">✕</button></div>
     <h2 class="section-title">Чутливість</h2>
-    <div class="cdx-toggle-button-group uimode" id="uiSeg" role="group" aria-label="Режим налаштувань">
-      ${toggleBtn("Простий", S.ui === "simple", 'data-ui="simple" title="Налаштування пресету вже застосовані; доступна лише мінімальна роздільність"')}
-      ${toggleBtn("Розширений", S.ui === "advanced", 'data-ui="advanced" title="Усі пороги та повзунки"')}
-    </div>
     <div class="preset-row">
       <select id="presetSel" class="cdx-select" title="Пресет номінації">${presetOpts}</select>
       <button class="cdx-button" id="applyPreset" title="Застосувати пороги пресету">Застосувати</button>
     </div>
     <p class="preset-desc muted small" id="presetDesc">${esc(p?.description || "")}</p>
-    <div class="simple-only"><div class="small muted">Діючі налаштування (з пресету; змінити їх можна в розширеному режимі):</div>
+    <div class="simple-only"><div class="small muted">Діючі налаштування (змінити їх можна в розширеному режимі):</div>
       <ul class="simple-sum" id="simpleSum"></ul></div>
     ${activeFilters().map(f => `
-      <div class="filter${f.key === "min_mpx" ? " keep always-on" : ""}" id="f-${f.key}">
+      <div class="filter${f.key === "min_mpx" ? " always-on" : ""}" id="f-${f.key}">
         <div class="fhead">
           <span class="cdx-toggle-switch">
             <input id="sw-${f.key}" class="cdx-toggle-switch__input" type="checkbox" role="switch" data-en="${enabledKey(f)}">
@@ -753,12 +791,6 @@ function renderAside() {
     const pr = paramDef(el.dataset.num); let v = +el.value; if (pr.pct) v /= 100;
     setT(pr.k, Math.min(pr.max, Math.max(pr.min, v)));
   }));
-  $("#uiSeg").addEventListener("click", e => {
-    const b = e.target.closest("[data-ui]"); if (!b) return;
-    S.ui = b.dataset.ui;
-    try { localStorage.setItem("wle-ui", S.ui); } catch {}
-    setPressed($("#uiSeg"), "ui", S.ui); syncAside();
-  });
   aside.querySelectorAll("[data-sel]").forEach(el => el.addEventListener("change", () => setT(el.dataset.sel, el.value)));
   aside.querySelectorAll("[data-ta]").forEach(el => el.addEventListener("input", () => setT(el.dataset.ta, el.value)));
   $("#yearsLoad")?.addEventListener("click", () => $("#yearsFile").click());
@@ -817,6 +849,7 @@ function simpleSummary() {
       ? `Таблички: написи ≥ ${pct(t.sign_text_area)} або табличка з постаментом ≥ ${pct(t.sign_object_area)}`
       : `Таблички: покриття текстом > ${pct(t.sign_coverage)}`),
     row(t.watermark_enabled, "Вотермарка"),
+    row(t.min_mpx_enabled, `Мін. роздільність: від ${fmtNum(t.min_mpx)} Мп`),
     row(t.duplicate_enabled, `Дублі: відстань ≤ ${t.duplicate_distance}` + ({author: ", в межах автора", monument: ", в межах пам'ятки"}[t.duplicate_scope] || "")),
   ];
   if (runCamp(S.run) === "wlm") {
@@ -829,6 +862,7 @@ function simpleSummary() {
 function syncAside() {
   const aside = $("#aside"); if (!aside) return;
   aside.classList.toggle("ui-simple", S.ui === "simple");
+  document.body.classList.toggle("simple", S.ui === "simple");
   const sum = $("#simpleSum"); if (sum) sum.innerHTML = simpleSummary();
   activeFilters().forEach(f => {
     const on = !!S.t[enabledKey(f)];
@@ -956,13 +990,16 @@ async function refresh({keepCount=false, summaryOnly=false, append=false} = {}) 
 
 function renderStats() {
   const s = S.summary;
-  $("#stats").innerHTML = `
-    <div class="stat"><b>${fmtInt(s.total)}</b><span class="muted small">усього</span></div>
-    <div class="stat ok"><b>${fmtInt(s.ok)}</b><span class="muted small">пройшли</span></div>
-    <div class="stat bad"><b>${fmtInt(s.flagged)}</b><span class="muted small">відсіяно</span></div>
-    <div class="stat man"><b>${fmtInt(s.manual)}</b><span class="muted small">перевірено вручну${s.overridden ? ` · ${s.overridden} змінено` : ""}</span></div>
-    ${s.error ? `<div class="stat err"><b>${fmtInt(s.error)}</b><span class="muted small">помилки</span></div>` : ""}
-    ${s.pending ? `<div class="stat"><b>${fmtInt(s.pending)}</b><span class="muted small">в черзі</span></div>` : ""}`;
+  // картки — це і є вкладки: клік перемикає перегляд
+  const card = (view, cls, n, label) =>
+    `<button type="button" class="stat ${cls}${S.view === view ? " active" : ""}" data-view="${view}" aria-pressed="${S.view === view}"><b>${fmtInt(n)}</b><span class="muted small">${label}</span></button>`;
+  $("#stats").innerHTML =
+    card("all", "", s.total, "усього") + card("ok", "ok", s.ok, "пройшли") + card("flagged", "bad", s.flagged, "відсіяно") +
+    card("manual", "man", s.manual, `перевірено вручну${s.overridden ? ` · ${s.overridden} змінено` : ""}`) +
+    (s.error ? card("error", "err", s.error, "помилки") : "") +
+    (s.pending ? card("pending", "", s.pending, "в черзі") : "");
+  $("#stats").onclick = e => { const b = e.target.closest("[data-view]"); if (!b) return;
+    S.view = b.dataset.view; if (!["flagged","all","manual"].includes(S.view)) S.reason = null; refresh(); };
   Object.entries(s.reasons).forEach(([k, n]) => { const b = $("#cnt-" + k); if (b) b.textContent = n; });
 }
 
@@ -1348,7 +1385,12 @@ function bindMenu(m) {
   m.querySelector("button").addEventListener("click", e => { e.stopPropagation(); document.querySelectorAll(".menu.open").forEach(x => x !== m && x.classList.remove("open")); m.classList.toggle("open"); });
 }
 document.addEventListener("click", () => document.querySelectorAll(".menu.open").forEach(m => m.classList.remove("open")));
-bindMenu($("#exportMenu")); bindMenu($("#runMenu"));
+bindMenu($("#exportMenu")); bindMenu($("#runMenu")); bindMenu($("#campSeg")); bindMenu($("#uiSeg"));
+// меню конкурсу й режиму відкриваються при наведенні; після вибору пункту згортаються, поки курсор не піде геть
+$$(".hover-menu").forEach(m => {
+  m.addEventListener("click", e => { if (e.target.closest(".menu-item")) { m.classList.add("nohover"); m.classList.remove("open"); document.activeElement?.blur(); } });
+  m.addEventListener("mouseleave", () => m.classList.remove("nohover"));
+});
 $("#exportMenu").addEventListener("click", async e => {
   const b = e.target.closest("[data-export]"); if (!b) return;
   await saveThresholds();   // експорт використовує збережені пороги
